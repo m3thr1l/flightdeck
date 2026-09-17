@@ -1,0 +1,87 @@
+#!/bin/bash
+# deck-man — paint a slice of a man page straight onto another pane's tty,
+# positioned at the definition of a given option.
+#
+#   deck-man TTY PAGE SCROLL [OPT ...]
+#
+#   TTY     pty device of the help pane, e.g. /dev/pts/7
+#   PAGE    man page name, e.g. ls, git-commit
+#   SCROLL  line offset added to the computed position (manual scrolling)
+#   OPT     candidate option spellings, tried in order (e.g. "-la" then "-a")
+#
+# Exit 1 = no such man page (caller keeps whatever was on screen).
+#
+# The pane is never running a pager. We render the page once to a cache file,
+# then every update is: grep for the line number, cut a window, write it.
+
+tty=$1 page=$2 scroll=${3:-0}
+shift 3 || exit 2
+[[ -w $tty ]] || exit 2
+
+read -r rows cols < <(stty size <"$tty") || exit 2
+(( rows > 2 && cols > 20 )) || exit 2
+
+cachedir=${XDG_CACHE_HOME:-$HOME/.cache}/deck
+cache=$cachedir/${page//\//_}.$cols          # width is part of the key: reflow differs
+esc=$'\e' bs=$'\b'
+
+if [[ ! -s $cache.fmt || ! -s $cache.txt ]]; then
+    mkdir -p "$cachedir"
+    # MAN_KEEP_FORMATTING: man normally strips bold/underline when stdout is
+    # not a terminal. MANWIDTH: wrap to the help pane, not to our own tty.
+    if ! MANWIDTH=$cols MAN_KEEP_FORMATTING=1 man -- "$page" >"$cache.raw.$$" 2>/dev/null \
+       || [[ ! -s $cache.raw.$$ ]]; then
+        rm -f "$cache.raw.$$"
+        exit 1
+    fi
+    # Plain copy, used only for searching. Strips SGR escapes and the
+    # typewriter-style overstrikes (X\bX = bold, _\bX = underline) that
+    # groff emits when SGR is disabled. One input line -> one output line,
+    # so line numbers stay valid for the formatted copy.
+    sed -E "s/${esc}\[[0-9;]*m//g; s/.${bs}//g" "$cache.raw.$$" >"$cache.txt"
+    # Display copy: turn overstrikes into real escape sequences.
+    sed -E "s/_${bs}(.)/${esc}[4m\1${esc}[24m/g; s/(.)${bs}\1/${esc}[1m\1${esc}[22m/g; s/.${bs}//g" \
+        "$cache.raw.$$" >"$cache.fmt"
+    rm -f "$cache.raw.$$"
+fi
+
+# --- locate the option ------------------------------------------------------
+target='' shown=''
+for opt; do
+    [[ -n $opt ]] || continue
+    re=$(printf '%s' "$opt" | sed 's/[][\.*^$+?(){}|]/\\&/g')
+    # A definition line: indented, begins with a dash, and our option appears
+    # either first or after earlier spellings ("-a, --all", "-m <msg>, --message=<msg>"),
+    # and is not a prefix of a longer option (--all vs --all-things).
+    target=$(grep -n -m1 -E -- "^[[:space:]]+(-.*[[:space:],|])?${re}([^[:alnum:]-]|\$)" "$cache.txt" | cut -d: -f1)
+    # Still typing? Accept a definition this is a prefix of (--mes -> --message).
+    [[ -n $target ]] || target=$(grep -n -m1 -E -- "^[[:space:]]+(-.*[[:space:],|])?${re}" "$cache.txt" | cut -d: -f1)
+    # Fallback: first mention anywhere (synopsis, prose).
+    [[ -n $target ]] || target=$(grep -n -m1 -w -F -- "$opt" "$cache.txt" | cut -d: -f1)
+    [[ -n $target ]] && { shown=$opt; break; }
+done
+
+total=$(wc -l <"$cache.txt")
+body=$(( rows - 1 ))                          # one row for the status bar
+top=$(( ${target:-1} - 2 + scroll ))          # two lines of context above
+(( top > total - body + 1 )) && top=$(( total - body + 1 ))
+(( top < 1 )) && top=1
+
+if [[ -n $shown ]]; then status="$page  $shown"
+elif (( $# )) && [[ -n $1 ]]; then status="$page  ($1 not found)"
+else status="$page"; fi
+
+# Build the whole frame, then emit it in a single write to avoid flicker.
+# ?7l = no auto-wrap, H = home, 2J = clear. No trailing newline, or the
+# pane would scroll by one.
+frame=$(
+    printf '%s[?7l%s[H%s[2J%s[7m %-*.*s%s[0m' "$esc" "$esc" "$esc" "$esc" \
+        $(( cols - 1 )) $(( cols - 1 )) "$status  [$top/$total]" "$esc"
+    awk -v s="$top" -v e=$(( top + body - 1 )) -v t="${target:-0}" '
+        NR > e { exit }
+        NR >= s {
+            if (NR == t) sub(/^  /, "\033[1;33m>\033[0m ")
+            printf "\n%s", $0
+        }' "$cache.fmt"
+)
+printf '%s' "$frame" >"$tty"
