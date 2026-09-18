@@ -42,7 +42,7 @@ deck() {
 
     # The extra panes run nothing but a sleeping placeholder. Its only job is
     # to keep the pane's pty open so that we have a terminal device to write to.
-    local hold='stty -echo 2>/dev/null; exec sleep infinity' info
+    local hold='stty -echo 2>/dev/null; exec tail -f /dev/null' info
     local me=$TMUX_PANE
 
     info=$(tmux split-window -h -d -l 42% -t $me -P -F '#{pane_id} #{pane_tty}' $hold) || return
@@ -51,6 +51,13 @@ deck() {
     DECK_OUT_PANE=${info%% *}  DECK_OUT_TTY=${info#* }
     info=$(tmux split-window -v -d -l 30% -t $DECK_OUT_PANE -P -F '#{pane_id} #{pane_tty}' $hold) || return
     DECK_ERR_PANE=${info%% *}  DECK_ERR_TTY=${info#* }
+
+    # Refuse to redirect at a pane that has already died (macOS recycles pty
+    # paths instantly, so a stale device may belong to someone else).
+    local p
+    for p in $DECK_HELP_PANE $DECK_OUT_PANE $DECK_ERR_PANE; do
+        tmux display-message -p -t $p "" >/dev/null 2>&1 || { print -u2 "deck: pane $p died at once"; _deck_off; return 1 }
+    done
 
     tmux select-pane -t $DECK_OUT_PANE  -T stdout \; select-pane -t $DECK_OUT_PANE  -d \; \
          select-pane -t $DECK_ERR_PANE  -T stderr \; select-pane -t $DECK_ERR_PANE  -d \; \
@@ -151,7 +158,7 @@ _deck_preexec() {
         local pg=${$(ps -o tpgid= -p $$)// /}
         [[ -n $pg && $pg != $$ && $pg != -1 ]] || exit 0
         # Wrapped by deck-tty? Show the real program, not the wrapper.
-        [[ $(ps -o comm= -p $pg) == deck-tty ]] && pg=${$(pgrep -n -P $pg):-$pg}
+        [[ $(ps -o command= -p $pg) == *deck-tty* ]] && pg=${$(pgrep -n -P $pg):-$pg}
         _deck_title "$1" $pg
     ) &!
     print -P  -- "%F{244}── %* ❯ ${1//\%/%%}%f"  >$DECK_OUT_TTY
@@ -164,7 +171,7 @@ _deck_precmd() {
     [[ -n $DECK_ERR_TTY ]] && (( st )) && print -P -- "%F{red}── exit $st%f" >$DECK_ERR_TTY
     return 0
 }
-_deck_exit() { _deck_off }
+_deck_exit() { (( ZSH_SUBSHELL == 0 )) && _deck_off }   # zsh runs zshexit in subshells too
 
 autoload -Uz add-zsh-hook add-zle-hook-widget
 add-zsh-hook preexec _deck_preexec
