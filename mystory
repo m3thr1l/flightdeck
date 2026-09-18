@@ -1,0 +1,802 @@
+#!/usr/bin/env python3
+"""mystory — command history with captured output, for review, rerun and audit.
+
+Data flow
+---------
+  zsh hooks (mystory.zsh)            tmux pipe-pane
+    append S/E events  ─┐              raw bytes of the stdout / stderr panes,
+    write invisible     │              including the markers, appended to
+    markers into panes ─┼─────────▶    live/<shellpid>-<pane>.out / .err
+                        ▼
+                 `mystory ingest`  cuts the logs at the markers, stores each
+                 record (SQLite row + files), chains its hash, prunes.
+
+Nothing here runs on the command's critical path: the hooks only append text.
+"""
+import argparse, difflib, fcntl, hashlib, json, os, re, shlex, shutil
+import sqlite3, subprocess, sys, time
+from datetime import datetime, timedelta
+
+US, RS = "\x1f", "\x1e"
+MARK = re.compile(rb"\x1b\]7777;mystory;([SE]);([0-9]+-[0-9]+)\x07")
+DATA = os.environ.get("MYSTORY_DIR") or os.path.join(
+    os.environ.get("XDG_DATA_HOME") or os.path.expanduser("~/.local/share"), "mystory")
+CONF = os.path.join(os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config"),
+                    "mystory", "config")
+DEFAULTS = {"keep": 5000, "list": 50, "cap_mb": 5, "paint_kb": 256}
+SELF = os.path.realpath(__file__)
+GRACE = 2.0            # seconds to wait for tmux to flush a marker before giving up
+
+
+# ------------------------------------------------------------------ config --
+def config():
+    c = dict(DEFAULTS)
+    try:
+        for line in open(CONF):
+            k, _, v = line.partition("=")
+            if k.strip() in c and v.strip().isdigit():
+                c[k.strip()] = int(v)
+    except OSError:
+        pass
+    return c
+
+
+def cmd_config(a):
+    c = config()
+    if a.key:
+        if a.key not in DEFAULTS or a.value is None or a.value < 0:
+            sys.exit(f"usage: mystory config [{'|'.join(DEFAULTS)} NUMBER]")
+        c[a.key] = a.value
+        os.makedirs(os.path.dirname(CONF), exist_ok=True)
+        with open(CONF, "w") as f:
+            f.writelines(f"{k} = {v}\n" for k, v in c.items())
+    for k, v in c.items():
+        print(f"{k:9} {v}")
+
+
+# ---------------------------------------------------------------- database --
+SCHEMA = """
+CREATE TABLE IF NOT EXISTS records(
+  seq INTEGER PRIMARY KEY AUTOINCREMENT, uid TEXT UNIQUE, state TEXT,
+  start REAL, end REAL, exit INTEGER, pipestatus TEXT,
+  cmd TEXT, expanded TEXT, first TEXT, cwd TEXT, host TEXT, user TEXT,
+  shell_pid INTEGER, git TEXT, pane TEXT, out_log TEXT, err_log TEXT, noout INTEGER,
+  out_bytes INTEGER, err_bytes INTEGER, out_sha TEXT, err_sha TEXT,
+  truncated INTEGER DEFAULT 0, capture TEXT, pinned INTEGER DEFAULT 0,
+  redacted INTEGER DEFAULT 0, meta_sha TEXT, prev_hash TEXT, hash TEXT, chain_seq INTEGER);
+CREATE INDEX IF NOT EXISTS r_state ON records(state);
+CREATE INDEX IF NOT EXISTS r_chain ON records(chain_seq);
+CREATE TABLE IF NOT EXISTS pruned(chain_seq INTEGER PRIMARY KEY, hash TEXT);
+CREATE TABLE IF NOT EXISTS state(key TEXT PRIMARY KEY, value TEXT);
+"""
+# Fields covered by meta_sha. Everything known about the run that must not change.
+META = ("uid", "start", "end", "exit", "pipestatus", "cmd", "expanded", "cwd", "host",
+        "user", "shell_pid", "git", "pane", "capture", "truncated")
+
+
+def db():
+    old = os.umask(0o077)
+    try:
+        os.makedirs(os.path.join(DATA, "records"), exist_ok=True)
+        os.makedirs(os.path.join(DATA, "live"), exist_ok=True)
+        con = sqlite3.connect(os.path.join(DATA, "mystory.db"), timeout=10)
+    finally:
+        os.umask(old)
+    con.row_factory = sqlite3.Row
+    con.execute("PRAGMA journal_mode=WAL")
+    con.executescript(SCHEMA)
+    return con
+
+
+def get_state(con, key, default=None):
+    r = con.execute("SELECT value FROM state WHERE key=?", (key,)).fetchone()
+    return r[0] if r else default
+
+
+def set_state(con, key, value):
+    con.execute("INSERT INTO state VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                (key, str(value)))
+
+
+def rec_dir(seq):
+    return os.path.join(DATA, "records", str(seq))
+
+
+def rec_file(seq, name):
+    return os.path.join(rec_dir(seq), name)
+
+
+# ------------------------------------------------------------ text helpers --
+ANSI = re.compile(rb"\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)"      # OSC ... BEL/ST
+                  rb"|\x1b\[[0-?]*[ -/]*[@-~]"               # CSI
+                  rb"|\x1b[@-Z\\-_]|\x1b[()][0-9A-B]")        # 2-byte, charset
+
+
+def plain(raw: bytes) -> str:
+    """Searchable text: no escape sequences, pty CRLF -> LF, and for lines that
+    were redrawn with bare CR (progress bars) keep only the final state."""
+    t = ANSI.sub(b"", raw).replace(b"\r\n", b"\n")
+    t = b"\n".join(line.rsplit(b"\r", 1)[-1] for line in t.split(b"\n"))
+    t = re.sub(rb"[\x00-\x08\x0b-\x1f\x7f]", b"", t)
+    return t.decode("utf-8", "replace")
+
+
+def sha(b: bytes) -> str:
+    return hashlib.sha256(b).hexdigest()
+
+
+def fmt_dur(s):
+    if s is None:
+        return "  …  "
+    if s < 1:
+        return f"{s*1000:.0f}ms"
+    if s < 60:
+        return f"{s:.1f}s"
+    m, s = divmod(int(s), 60)
+    h, m = divmod(m, 60)
+    return f"{h}h{m:02}m" if h else f"{m}m{s:02}s"
+
+
+def fmt_time(t):
+    return datetime.fromtimestamp(t).strftime("%Y-%m-%d %H:%M:%S")
+
+
+def short_cwd(p, width=0):
+    home = os.path.expanduser("~")
+    p = "~" + p[len(home):] if p and p.startswith(home) else (p or "")
+    return "…" + p[-(width - 1):] if width and len(p) > width else p
+
+
+# ------------------------------------------------------------------ ingest --
+def pid_alive(pid):
+    try:
+        os.kill(int(pid), 0)
+        return True
+    except (OSError, ValueError, TypeError):
+        return pid is not None and os.path.exists(f"/proc/{pid}")
+
+
+def read_events(con):
+    path = os.path.join(DATA, "events")
+    try:
+        f = open(path, "rb")
+    except OSError:
+        return
+    off = int(get_state(con, "events_off", 0))
+    if off > os.path.getsize(path):
+        off = 0
+    f.seek(off)
+    buf = f.read()
+    end = buf.rfind(RS.encode())
+    if end < 0:
+        return
+    for chunk in buf[:end].split(RS.encode()):
+        p = chunk.decode("utf-8", "replace").lstrip("\n").split(US)
+        if p[0] == "S" and len(p) >= 14:
+            (_, uid, ts, pid, host, user, cwd, outl, errl, noout, git, pane, cmd, exp) = p[:14]
+            words = cmd.split()
+            con.execute(
+                "INSERT OR IGNORE INTO records(uid,state,start,shell_pid,host,user,cwd,out_log,"
+                "err_log,noout,git,pane,cmd,expanded,first) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (uid, "running", float(ts), int(pid), host, user, cwd, outl, errl,
+                 int(noout or 0), git, pane, cmd, exp, os.path.basename(words[0]) if words else ""))
+        elif p[0] == "E" and len(p) >= 5:
+            con.execute("UPDATE records SET state='ended', end=?, exit=?, pipestatus=? "
+                        "WHERE uid=? AND state='running'", (float(p[2]), int(p[3] or 0), p[4], p[1]))
+    set_state(con, "events_off", off + end + 1)
+
+
+def slice_log(path, uid, consumed, final):
+    """Return (bytes|None, new_consumed, capture_status). None = not ready yet."""
+    if not path:
+        return b"", consumed, "none"
+    try:
+        with open(path, "rb") as f:
+            f.seek(consumed)
+            buf = f.read()
+    except OSError:
+        return b"", consumed, "missing"
+    s = e = nxt = None
+    for m in MARK.finditer(buf):
+        kind, mid = m.group(1), m.group(2).decode()
+        if mid == uid and kind == b"S":
+            s = m
+        elif mid == uid and kind == b"E":
+            e = m
+            break
+        elif s is not None and kind == b"S":      # next command began: ours has no E
+            nxt = m
+            break
+    if s and e:
+        return buf[s.end():e.start()], consumed + e.end(), "ok"
+    if not final:
+        return None, consumed, ""
+    if s:                                          # pane died / shell crashed mid-command
+        stop = nxt.start() if nxt else len(buf)
+        return buf[s.end():stop], consumed + stop, "partial"
+    return b"", consumed, "missing"
+
+
+def cap(raw, limit):
+    if len(raw) <= limit:
+        return raw, 0
+    half = limit // 2
+    note = f"\r\n\x1b[0;7m [mystory: {len(raw) - 2*half} bytes omitted] \x1b[0m\r\n".encode()
+    return raw[:half] + note + raw[-half:], 1
+
+
+def finalize(con, r, out, err, capture, cfg):
+    limit = cfg["cap_mb"] * 1024 * 1024
+    if r["noout"]:
+        out, err, capture = b"", b"", "off"
+    out, t1 = cap(out, limit)
+    err, t2 = cap(err, limit)
+    old = os.umask(0o077)
+    try:
+        os.makedirs(rec_dir(r["seq"]), exist_ok=True)
+        for name, raw in (("out", out), ("err", err)):
+            with open(rec_file(r["seq"], name + ".raw"), "wb") as f:
+                f.write(raw)
+            with open(rec_file(r["seq"], name + ".txt"), "w") as f:
+                f.write(plain(raw))
+    finally:
+        os.umask(old)
+    fields = dict(r)
+    fields.update(capture=capture, truncated=t1 | t2)
+    state = "done" if r["state"] == "ended" else "lost"
+    meta_sha = sha(json.dumps({k: fields[k] for k in META}, sort_keys=True).encode())
+    out_sha, err_sha = sha(out), sha(err)
+    prev = get_state(con, "chain_head", "0" * 64)
+    chain_seq = int(get_state(con, "chain_seq", 0)) + 1
+    h = sha("|".join((prev, str(chain_seq), meta_sha, out_sha, err_sha)).encode())
+    con.execute("UPDATE records SET state=?, out_bytes=?, err_bytes=?, out_sha=?, err_sha=?,"
+                "truncated=?, capture=?, meta_sha=?, prev_hash=?, hash=?, chain_seq=? WHERE seq=?",
+                (state, len(out), len(err), out_sha, err_sha, t1 | t2, capture, meta_sha,
+                 prev, h, chain_seq, r["seq"]))
+    set_state(con, "chain_head", h)
+    set_state(con, "chain_seq", chain_seq)
+
+
+def ingest_once(con, cfg):
+    """One pass. Returns number of records still waiting for their markers."""
+    read_events(con)
+    now, waiting = time.time(), 0
+    rows = con.execute("SELECT * FROM records WHERE state IN('running','ended') ORDER BY seq").fetchall()
+    for r in rows:
+        if r["state"] == "running":
+            later = con.execute("SELECT 1 FROM records WHERE shell_pid=? AND seq>? LIMIT 1",
+                                (r["shell_pid"], r["seq"])).fetchone()
+            if pid_alive(r["shell_pid"]) and not later:
+                continue                           # still executing
+            final = True                           # shell gone, or it moved on without an E event
+        else:
+            final = now - r["end"] > GRACE
+        parts, offs, caps = [], {}, []
+        for col in ("out_log", "err_log"):
+            path = r[col]
+            consumed = int(get_state(con, "off:" + path, 0)) if path else 0
+            if path and os.path.exists(path) and consumed > os.path.getsize(path):
+                consumed = 0
+            data, new, status = slice_log(path, r["uid"], consumed, final)
+            if data is None:
+                break
+            parts.append(data); offs[path] = new; caps.append(status)
+        else:
+            capture = "ok" if all(c == "ok" for c in caps) else \
+                      "none" if all(c == "none" for c in caps) else \
+                      "partial" if "partial" in caps or "ok" in caps else "missing"
+            finalize(con, r, parts[0], parts[1], capture, cfg)
+            for path, new in offs.items():
+                if path:
+                    set_state(con, "off:" + path, new)
+            continue
+        waiting += 1
+    con.commit()
+    return waiting
+
+
+def housekeeping(con, cfg):
+    # Retention: newest `keep` unpinned records survive. Pruned records leave
+    # (chain_seq, hash) behind so the chain stays verifiable end to end.
+    rows = con.execute("SELECT seq, chain_seq, hash FROM records WHERE pinned=0 AND state IN('done','lost') "
+                       "ORDER BY seq DESC LIMIT -1 OFFSET ?", (cfg["keep"],)).fetchall()
+    for r in rows:
+        con.execute("INSERT OR REPLACE INTO pruned VALUES(?,?)", (r["chain_seq"], r["hash"]))
+        con.execute("DELETE FROM records WHERE seq=?", (r["seq"],))
+        shutil.rmtree(rec_dir(r["seq"]), ignore_errors=True)
+    # Live logs: drop those of dead shells once nothing is pending on them;
+    # truncate fully-consumed big ones (safe: writers use O_APPEND).
+    pending = {p for row in con.execute("SELECT out_log, err_log FROM records WHERE state IN('running','ended')")
+               for p in row if p}
+    live = os.path.join(DATA, "live")
+    for name in os.listdir(live):
+        path = os.path.join(live, name)
+        if path in pending:
+            continue
+        pid = name.split("-", 1)[0]
+        size = os.path.getsize(path)
+        consumed = int(get_state(con, "off:" + path, 0))
+        if not pid_alive(pid):
+            os.unlink(path)
+            con.execute("DELETE FROM state WHERE key=?", ("off:" + path,))
+        elif size > 1 << 20 and consumed == size:
+            os.truncate(path, 0)
+            set_state(con, "off:" + path, 0)
+    con.commit()
+
+
+def ingest(retries=0):
+    cfg = config()
+    con = db()
+    lock = open(os.path.join(DATA, "lock"), "w")
+    try:
+        fcntl.flock(lock, fcntl.LOCK_EX | (fcntl.LOCK_NB if not retries else 0))
+    except OSError:
+        return con                                 # someone else is ingesting
+    try:
+        for i in range(retries + 1):
+            if not ingest_once(con, cfg):
+                break
+            if i < retries:
+                time.sleep(0.4)
+        housekeeping(con, cfg)
+    finally:
+        fcntl.flock(lock, fcntl.LOCK_UN)
+    return con
+
+
+# ------------------------------------------------------------------ search --
+IPV4 = re.compile(r"^\d{1,3}(\.\d{1,3}){3}$")
+
+
+def matcher(term, word):
+    flags = 0 if any(ch.isupper() for ch in term) else re.I      # smart case
+    if IPV4.match(term):
+        rx = r"(?<![\d.])" + re.escape(term) + r"(?!\d|\.\d)"     # .5 must not match .50
+    elif word:
+        rx = r"(?<![\w.-])" + re.escape(term) + r"(?![\w-])"
+    else:
+        rx = re.escape(term)
+    return re.compile(rx, flags)
+
+
+def parse_since(s):
+    now = datetime.now()
+    if s == "today":
+        return now.replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
+    if s == "yesterday":
+        return (now.replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=1)).timestamp()
+    m = re.fullmatch(r"(\d+)([mhdw])", s)
+    if m:
+        return (now - timedelta(**{{"m": "minutes", "h": "hours", "d": "days", "w": "weeks"}[m.group(2)]:
+                                   int(m.group(1))})).timestamp()
+    for f in ("%Y-%m-%d %H:%M", "%Y-%m-%d"):
+        try:
+            return datetime.strptime(s, f).timestamp()
+        except ValueError:
+            pass
+    sys.exit(f"mystory: can't parse --since {s!r} (try: today, yesterday, 90m, 6h, 3d, 2026-09-17)")
+
+
+def read_txt(seq, name):
+    try:
+        with open(rec_file(seq, name + ".txt"), errors="replace") as f:
+            return f.read()
+    except OSError:
+        return ""
+
+
+def query(con, a):
+    """Newest first, always. Returns [(row, where_matched)]."""
+    sql, args = "SELECT * FROM records WHERE 1", []
+    if a.failed:
+        sql += " AND exit IS NOT NULL AND exit != 0"
+    if a.here:
+        sql += " AND cwd = ?"; args.append(a.cwd or os.getcwd())
+    if a.since:
+        sql += " AND start >= ?"; args.append(parse_since(a.since))
+    if a.host:
+        sql += " AND host = ?"; args.append(a.host)
+    if a.pinned:
+        sql += " AND pinned = 1"
+    ms = [matcher(t, a.word) for t in a.terms]
+    limit = a.n or config()["list"]
+    hits = []
+    for r in con.execute(sql + " ORDER BY seq DESC", args):
+        where = set()
+        ok = True
+        for m in ms:
+            w = None
+            if m.search(r["cmd"] or ""):
+                w = "cmd"
+            elif a.output and not r["redacted"]:
+                if m.search(read_txt(r["seq"], "out")):
+                    w = "out"
+                elif m.search(read_txt(r["seq"], "err")):
+                    w = "err"
+            if not w:
+                ok = False
+                break
+            where.add(w)
+        if ok:
+            hits.append((r, ",".join(sorted(where - {"cmd"}))))
+            if len(hits) >= limit:
+                break
+    return hits
+
+
+def row_line(r, where, color):
+    ex = r["exit"]
+    status = "run" if r["state"] == "running" else "lost" if r["state"] == "lost" else str(ex)
+    dur = fmt_dur(r["end"] - r["start"]) if r["end"] else fmt_dur(None)
+    cmd = " ".join((r["cmd"] or "").split())
+    flags = ("*" if r["pinned"] else "") + ("R" if r["redacted"] else "") + (f"[{where}]" if where else "")
+    cols = [str(r["seq"]), fmt_time(r["start"]), f"{status:>4}", f"{dur:>6}",
+            short_cwd(r["cwd"], 28), (flags + " " if flags else "") + cmd]
+    if color:
+        bad = status not in ("0", "run")
+        cols[2] = f"\x1b[{'31' if bad else '32'}m{cols[2]}\x1b[0m"
+        cols[1] = f"\x1b[38;5;244m{cols[1]}\x1b[0m"
+        cols[4] = f"\x1b[34m{cols[4]}\x1b[0m"
+    return "\t".join(cols)
+
+
+def cmd_list(a):
+    con = ingest()
+    use_ui = (not a.plain and sys.stdout.isatty() and os.environ.get("TMUX")
+              and shutil.which("fzf"))
+    if use_ui:
+        return launch_review(a)
+    for r, where in query(con, a):
+        print(row_line(r, where, sys.stdout.isatty()).replace("\t", "  "))
+
+
+def cmd_rows(a):                                   # internal: feed for fzf (and its reloads)
+    con = ingest()
+    for r, where in query(con, a):
+        print(row_line(r, where, True))
+
+
+# -------------------------------------------------------------------- show --
+def get(con, seq):
+    r = con.execute("SELECT * FROM records WHERE seq=?", (seq,)).fetchone()
+    if not r:
+        sys.exit(f"mystory: no record {seq}")
+    return r
+
+
+def meta_text(con, r, color=True):
+    B, D, R, G, X = ("\x1b[1m", "\x1b[38;5;244m", "\x1b[31m", "\x1b[32m", "\x1b[0m") if color else ("",) * 5
+    ok = verify_one(con, r)
+    n = con.execute("SELECT COUNT(*) FROM records WHERE cmd=?", (r["cmd"],)).fetchone()[0]
+    lines = [
+        f"{B}#{r['seq']}{X}  {D}{r['uid']}{X}", "",
+        f"{B}{r['cmd']}{X}", "",
+        f"started   {fmt_time(r['start'])}",
+        f"ended     {fmt_time(r['end']) if r['end'] else '—'}",
+        f"duration  {fmt_dur(r['end'] - r['start']) if r['end'] else '—'}",
+        f"exit      {(G if r['exit'] == 0 else R)}{r['exit']}{X}"
+        + (f"  {D}pipestatus {r['pipestatus']}{X}" if r["pipestatus"] and " " in r["pipestatus"] else ""),
+        f"state     {r['state']}", "",
+        f"cwd       {r['cwd']}",
+        f"host      {r['user']}@{r['host']}",
+        f"shell     pid {r['shell_pid']}  pane {r['pane'] or '—'}",
+        f"git       {r['git'] or '—'}", "",
+        f"stdout    {r['out_bytes'] or 0} bytes",
+        f"stderr    {r['err_bytes'] or 0} bytes",
+        f"capture   {r['capture'] or '—'}" + ("  (truncated)" if r["truncated"] else "")
+        + ("  (REDACTED)" if r["redacted"] else ""),
+        f"pinned    {'yes' if r['pinned'] else 'no'}",
+        f"runs      {n} of this exact command on record", "",
+        f"chain     #{r['chain_seq'] or '—'}  " + (f"{G}verified{X}" if ok is True else
+                                                   f"{D}pending{X}" if ok is None else f"{R}FAILED: {ok}{X}"),
+        f"{D}{(r['hash'] or '')[:32]}…{X}",
+    ]
+    if r["expanded"] and r["expanded"].strip() != (r["cmd"] or "").strip():
+        lines[3:3] = [f"{D}expands to:{X} {r['expanded'].strip()}", ""]
+    return "\n".join(lines)
+
+
+def cmd_show(a):
+    con = ingest()
+    r = get(con, a.seq)
+    tty = sys.stdout.isatty()
+    print(meta_text(con, r, tty))
+    for name, title in (("out", "stdout"), ("err", "stderr")):
+        print(f"\n──── {title} " + "─" * 40)
+        if a.raw:
+            sys.stdout.flush()
+            try:
+                sys.stdout.buffer.write(open(rec_file(r["seq"], name + ".raw"), "rb").read())
+            except OSError:
+                pass
+        else:
+            sys.stdout.write(read_txt(r["seq"], name))
+
+
+# ------------------------------------------------------------------ verify --
+def verify_one(con, r):
+    """True, None (not finalized yet) or a string describing the failure."""
+    if not r["hash"]:
+        return None
+    if not r["redacted"]:
+        fields = dict(r)
+        if sha(json.dumps({k: fields[k] for k in META}, sort_keys=True).encode()) != r["meta_sha"]:
+            return "metadata changed"
+        for name in ("out", "err"):
+            try:
+                data = open(rec_file(r["seq"], name + ".raw"), "rb").read()
+            except OSError:
+                return f"{name}.raw missing"
+            if sha(data) != r[name + "_sha"]:
+                return f"{name} content changed"
+    h = sha("|".join((r["prev_hash"], str(r["chain_seq"]), r["meta_sha"], r["out_sha"], r["err_sha"])).encode())
+    return True if h == r["hash"] else "record hash mismatch"
+
+
+def cmd_verify(a):
+    con = ingest()
+    chain = {r["chain_seq"]: r for r in con.execute("SELECT * FROM records WHERE chain_seq IS NOT NULL")}
+    pruned = dict(con.execute("SELECT chain_seq, hash FROM pruned").fetchall())
+    head = int(get_state(con, "chain_seq", 0))
+    bad, prev = 0, "0" * 64
+    for i in range(1, head + 1):
+        if i in chain:
+            r = chain[i]
+            res = verify_one(con, r)
+            if res is True and r["prev_hash"] != prev:
+                res = "does not link to the record before it"
+            if res is not True:
+                bad += 1
+                print(f"FAIL  #{r['seq']} (chain {i}): {res}   {r['cmd']!r}")
+            prev = r["hash"]
+        elif i in pruned:
+            prev = pruned[i]
+        else:
+            bad += 1
+            print(f"FAIL  chain position {i}: record deleted outside mystory")
+            prev = None
+    if head and prev is not None and prev != get_state(con, "chain_head"):
+        bad += 1
+        print("FAIL  chain head does not match the last record")
+    red = con.execute("SELECT COUNT(*) FROM records WHERE redacted=1").fetchone()[0]
+    print(f"{len(chain)} records checked, {len(pruned)} pruned, {red} redacted, {bad} problem(s)")
+    sys.exit(1 if bad else 0)
+
+
+# ------------------------------------------------------- pin / redact / diff --
+def cmd_pin(a):
+    con = db()
+    r = get(con, a.seq)
+    new = (0 if r["pinned"] else 1) if a.toggle else (0 if a.unpin else 1)
+    con.execute("UPDATE records SET pinned=? WHERE seq=?", (new, a.seq))
+    con.commit()
+
+
+def cmd_redact(a):
+    """Destroy a record's output (and with --cmd its command line) but keep its
+    place in the chain: the stored hashes stay, so the chain still verifies and
+    the record visibly says REDACTED."""
+    con = db()
+    r = get(con, a.seq)
+    for name in ("out.raw", "out.txt", "err.raw", "err.txt"):
+        try:
+            with open(rec_file(a.seq, name), "w") as f:
+                f.write("[redacted]\n")
+        except OSError:
+            pass
+    if a.cmd:
+        con.execute("UPDATE records SET cmd='[redacted]', expanded='[redacted]' WHERE seq=?", (a.seq,))
+    con.execute("UPDATE records SET redacted=1 WHERE seq=?", (a.seq,))
+    con.commit()
+    print(f"#{a.seq} redacted")
+
+
+def previous_run(con, r):
+    return con.execute("SELECT * FROM records WHERE cmd=? AND seq<? AND state IN('done','lost') "
+                       "ORDER BY seq DESC LIMIT 1", (r["cmd"], r["seq"])).fetchone()
+
+
+def diff_text(con, r, other=None, color=True):
+    o = other or previous_run(con, r)
+    if not o:
+        return "No earlier run of this exact command on record.\n"
+    out = []
+    for name, title in (("out", "stdout"), ("err", "stderr")):
+        a_, b_ = read_txt(o["seq"], name).splitlines(), read_txt(r["seq"], name).splitlines()
+        d = list(difflib.unified_diff(a_, b_, f"#{o['seq']} {title}  {fmt_time(o['start'])}",
+                                      f"#{r['seq']} {title}  {fmt_time(r['start'])}", lineterm=""))
+        out += d or [f"{title}: identical (#{o['seq']} vs #{r['seq']})"]
+        out.append("")
+    if color:
+        tint = {"+": "\x1b[32m", "-": "\x1b[31m", "@": "\x1b[36m"}
+        out = [tint.get(l[:1], "") + l + "\x1b[0m" if l[:1] in tint else l for l in out]
+    return "\n".join(out) + "\n"
+
+
+def cmd_diff(a):
+    con = ingest()
+    r = get(con, a.seq)
+    sys.stdout.write(diff_text(con, r, get(con, a.other) if a.other else None, sys.stdout.isatty()))
+
+
+# ------------------------------------------------------------ review window --
+def tmux(*args):
+    return subprocess.run(("tmux",) + args, capture_output=True, text=True).stdout.strip()
+
+
+def filter_args(a):
+    out = []
+    for flag in ("output", "word", "failed", "here", "pinned"):
+        if getattr(a, flag, False):
+            out.append("--" + flag)
+    for opt in ("n", "since", "host", "cwd"):
+        v = getattr(a, opt, None)
+        if v:
+            out += ["-n" if opt == "n" else "--" + opt, str(v)]
+    return out + ["--"] + a.terms
+
+
+def launch_review(a):
+    a.cwd = a.cwd or os.getcwd()
+    origin = os.environ.get("TMUX_PANE", "")
+    argv = [sys.executable, SELF, "_review", "--origin", origin] + filter_args(a)
+    tmux("new-window", "-n", "mystory", shlex.join(argv))
+
+
+def cmd_review(a):
+    me = os.environ["TMUX_PANE"]
+    hold = "stty -echo 2>/dev/null; exec sleep 3600"
+    fmt = "#{pane_id} #{pane_tty}"
+    meta = tmux("split-window", "-h", "-d", "-l", "38%", "-t", me, "-P", "-F", fmt, hold).split()
+    out = tmux("split-window", "-v", "-d", "-l", "70%", "-t", me, "-P", "-F", fmt, hold).split()
+    err = tmux("split-window", "-v", "-d", "-l", "30%", "-t", out[0], "-P", "-F", fmt, hold).split()
+    for p, title in ((out, "stdout (recorded)"), (err, "stderr (recorded)"), (meta, "record"), ([me], "mystory")):
+        tmux("select-pane", "-t", p[0], "-T", title)
+        if p[0] != me:
+            tmux("select-pane", "-t", p[0], "-d")
+    tmux("set-option", "-w", "pane-border-status", "top")
+    tmux("set-option", "-w", "pane-border-format", " #{pane_title} ")
+    tmux("select-pane", "-t", me)
+
+    py = shlex.join([sys.executable, SELF])
+    panes = shlex.join([out[0], out[1], err[0], err[1], meta[1]])
+    rows = f"{py} _rows {shlex.join(filter_args(a))}"
+    paint = f"{py} _paint {{1}} {panes}"
+    binds = [
+        f"focus:execute-silent({paint})",
+        f"ctrl-d:execute-silent({paint} --diff)",
+        f"ctrl-p:execute-silent({py} pin --toggle {{1}})+reload({rows})",
+        f"ctrl-y:execute-silent(tmux load-buffer -w {shlex.quote(DATA)}/records/{{1}}/out.txt)",
+        f"ctrl-o:execute(less -R {shlex.quote(DATA)}/records/{{1}}/out.raw)",
+        f"ctrl-e:execute(less -R {shlex.quote(DATA)}/records/{{1}}/err.raw)",
+        "ctrl-r:become(echo RUN {1})",
+        "enter:become(echo EDIT {1})",
+    ]
+    header = ("enter: to prompt   ^R: rerun   ^D: diff vs previous run   ^P: pin\n"
+              "^Y: copy stdout    ^O/^E: open stdout/stderr in less   esc: quit")
+    cmd = ["fzf", "--ansi", "--exact", "--no-sort", "--layout=reverse", "--delimiter=\t",
+           "--tabstop=2", "--no-multi", "--header", header, "--prompt", "mystory> "]
+    for b in binds:
+        cmd += ["--bind", b]
+    feed = subprocess.run([sys.executable, SELF, "_rows"] + filter_args(a), capture_output=True)
+    res = subprocess.run(cmd, input=feed.stdout, stdout=subprocess.PIPE)
+    action = res.stdout.decode().split()
+    if len(action) == 2 and a.origin:
+        r = db().execute("SELECT cmd FROM records WHERE seq=?", (action[1],)).fetchone()
+        if r and r["cmd"] != "[redacted]":
+            # Bracketed paste: zsh inserts the text at the prompt without executing
+            # it, even if it spans several lines.
+            subprocess.run(["tmux", "load-buffer", "-b", "mystory", "-"], input=r["cmd"].rstrip("\n").encode())
+            tmux("paste-buffer", "-p", "-d", "-b", "mystory", "-t", a.origin)
+            if action[0] == "RUN":
+                tmux("send-keys", "-t", a.origin, "Enter")
+    tmux("kill-window")
+
+
+def cmd_paint(a):
+    con = db()
+    r = get(con, a.seq)
+    cfg = config()
+    limit = cfg["paint_kb"] * 1024
+
+    def put(pane, tty, data):
+        try:
+            with open(tty, "wb") as f:
+                f.write(b"\x1bc")                  # full reset: recorded output may have left modes set
+                f.flush()
+                if pane:
+                    tmux("clear-history", "-t", pane)
+                f.write(data)
+        except OSError:
+            pass
+
+    def raw(name):
+        try:
+            data = open(rec_file(r["seq"], name + ".raw"), "rb").read()
+        except OSError:
+            return b""
+        if len(data) > limit:
+            data = (f"\x1b[7m [last {cfg['paint_kb']} KB of {len(data)//1024} KB — ^O/^E opens it all] "
+                    f"\x1b[0m\r\n").encode() + data[-limit:]
+        return data.rstrip(b"\r\n")
+
+    if a.diff:
+        put(a.out_pane, a.out_tty, diff_text(con, r).replace("\n", "\r\n").encode())
+    else:
+        put(a.out_pane, a.out_tty, raw("out"))
+    put(a.err_pane, a.err_tty, raw("err"))
+    put(None, a.meta_tty, b"\x1b[?7l" + meta_text(con, r).replace("\n", "\r\n").encode())
+
+
+# --------------------------------------------------------------------- cli --
+def add_filters(p):
+    p.add_argument("terms", nargs="*", help="all must appear in the command line (or output with -o)")
+    p.add_argument("-o", "--output", action="store_true", help="also search captured stdout/stderr")
+    p.add_argument("-w", "--word", action="store_true", help="match whole words only")
+    p.add_argument("-n", type=int, help="how many records (default: config 'list')")
+    p.add_argument("--failed", action="store_true", help="non-zero exit only")
+    p.add_argument("--here", action="store_true", help="run from the current directory only")
+    p.add_argument("--since", help="today, yesterday, 90m, 6h, 3d, 2w, 2026-09-17")
+    p.add_argument("--host")
+    p.add_argument("--pinned", action="store_true")
+    p.add_argument("--plain", action="store_true", help="print the list instead of opening the review window")
+    p.add_argument("--cwd", help=argparse.SUPPRESS)
+
+
+def main():
+    subs = {"show", "verify", "pin", "unpin", "redact", "diff", "config", "ingest",
+            "_rows", "_review", "_paint"}
+    argv = sys.argv[1:]
+    if not argv or argv[0] not in subs:
+        p = argparse.ArgumentParser(prog="mystory", description=__doc__.split("\n")[0], epilog=(
+            "subcommands: show N [--raw] · diff N [M] · pin N · unpin N · redact N [--cmd] · "
+            "verify · config [KEY NUMBER] · ingest"))
+        add_filters(p)
+        return cmd_list(p.parse_args(argv))
+    sub, rest = argv[0], argv[1:]
+    p = argparse.ArgumentParser(prog="mystory " + sub)
+    if sub in ("_rows", "_review"):
+        add_filters(p)
+        if sub == "_review":
+            p.add_argument("--origin", default="")
+        a = p.parse_args(rest)
+        return cmd_rows(a) if sub == "_rows" else cmd_review(a)
+    if sub == "_paint":
+        for n in ("seq", "out_pane", "out_tty", "err_pane", "err_tty", "meta_tty"):
+            p.add_argument(n, type=int if n == "seq" else str)
+        p.add_argument("--diff", action="store_true")
+        return cmd_paint(p.parse_args(rest))
+    if sub == "ingest":
+        p.add_argument("--wait", action="store_true", help="retry briefly until tmux has flushed the markers")
+        a = p.parse_args(rest)
+        ingest(retries=6 if a.wait else 0)
+        return
+    if sub == "verify":
+        return cmd_verify(p.parse_args(rest))
+    if sub == "config":
+        p.add_argument("key", nargs="?"); p.add_argument("value", nargs="?", type=int)
+        return cmd_config(p.parse_args(rest))
+    p.add_argument("seq", type=int)
+    if sub == "show":
+        p.add_argument("--raw", action="store_true", help="replay with original colours")
+        return cmd_show(p.parse_args(rest))
+    if sub == "diff":
+        p.add_argument("other", nargs="?", type=int, help="default: previous run of the same command")
+        return cmd_diff(p.parse_args(rest))
+    if sub in ("pin", "unpin"):
+        p.add_argument("--toggle", action="store_true")
+        a = p.parse_args(rest); a.unpin = sub == "unpin"
+        return cmd_pin(a)
+    if sub == "redact":
+        p.add_argument("--cmd", action="store_true", help="also blank the command line itself")
+        return cmd_redact(p.parse_args(rest))
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except BrokenPipeError:
+        pass
+    except KeyboardInterrupt:
+        sys.exit(130)
