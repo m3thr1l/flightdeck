@@ -29,7 +29,7 @@ if [[ ! -s $cache.fmt || ! -s $cache.txt ]]; then
     mkdir -p "$cachedir"
     # MAN_KEEP_FORMATTING: man normally strips bold/underline when stdout is
     # not a terminal. MANWIDTH: wrap to the help pane, not to our own tty.
-    if ! MANWIDTH=$cols MAN_KEEP_FORMATTING=1 man -- "$page" >"$cache.raw.$$" 2>/dev/null \
+    if ! MANWIDTH=$cols MAN_KEEP_FORMATTING=1 MANPAGER=cat PAGER=cat man -- "$page" >"$cache.raw.$$" 2>/dev/null \
        || [[ ! -s $cache.raw.$$ ]]; then
         rm -f "$cache.raw.$$"
         exit 1
@@ -61,7 +61,7 @@ for opt; do
     [[ -n $target ]] && { shown=$opt; break; }
 done
 
-total=$(wc -l <"$cache.txt")
+total=$(( $(wc -l <"$cache.txt") ))            # BSD wc pads with spaces
 body=$(( rows - 1 ))                          # one row for the status bar
 top=$(( ${target:-1} - 2 + scroll ))          # two lines of context above
 (( top > total - body + 1 )) && top=$(( total - body + 1 ))
