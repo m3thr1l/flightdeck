@@ -131,6 +131,9 @@ The right-hand pane is a slot. `DECK_MODE` names what it currently follows;
 both it and `$_deck_scroll` are reset on every switch. Define the functions,
 then `DECK_MODES+=( NAME )`; `deck mode NAME` and Alt-m pick it up.
 
+Plugins add subcommands the same way: a function `_deck_cmd_NAME` is run by
+`deck NAME ...`, so nothing on `$PATH` gets shadowed.
+
 ### Modes: `script` and `files`
 
 `deck mode script` shows the source of the script named on the command line.
