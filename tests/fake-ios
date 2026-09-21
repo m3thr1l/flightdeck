@@ -44,6 +44,16 @@ try:
                 a += c; w(c.decode())
             w("\r\n" + ("Building configuration...\r\n[OK]\r\n" if a.strip().lower() in (b"yes", b"y") else "Not saved.\r\n"))
         elif cmd == "show version": w("Cisco IOS Software, fake-ios 1.0\r\nuptime is 3 days\r\n")
+        elif cmd == "show long":
+            for i in range(1, 8):
+                w(f"line {i} of a long listing\r\n")
+                if i % 3 == 0:
+                    w(" --More-- "); os.read(fd, 1); w("\r" + " " * 10 + "\r")
+        elif cmd == "show long2":                       # small-business style pager
+            for i in range(1, 6):
+                w(f"entry {i}\r\n")
+                if i % 2 == 0:
+                    w("More: <space>,  Quit: q or CTRL+Z, One line: <return> "); os.read(fd, 1); w("\r\x1b[K")
         elif cmd == "show ip interface brief": w("Interface   IP-Address   Status\r\nGi0/1       10.0.0.1     up\r\n")
         elif cmd: w(f"{' ' * (len(prompt()) + 1)}^\r\n% Invalid input detected at '^' marker.\r\n")
         w(prompt())
