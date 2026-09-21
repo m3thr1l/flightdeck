@@ -26,6 +26,10 @@ import fcntl, os, pty, re, select, signal, struct, sys, termios, time, tty
 PROMPT = re.compile(rb"(?m)^(?P<host>[\w.-]+)(?P<mode>\([\w./-]*\))?(?P<lvl>[>#])")
 ERROR  = re.compile(rb"^(%|\s*\^\s*$|Command rejected|Invalid input|Ambiguous command)")
 ANSI   = re.compile(rb"\x1b\[[0-9;?]*[A-Za-z]|\r")
+# Pager prompts: IOS/NX-OS `--More--`, ASA `<--- More --->`, HP `-- MORE --, next page: ...`,
+# Dell/Netgear/Cisco SB `More: <space>,  Quit: q or CTRL+Z, One line: <return>`, and friends.
+MORE   = re.compile(rb"(--\s?More\s?--[^\n]*|<--- More --->|More:[^\n]*|Press any key to continue[^\n]*|\(END\))\s*$", re.I)
+ERASE  = re.compile(rb"^(\x1b\[[0-9]*K|[\b \r])+")     # how pagers wipe their prompt
 DIM, RESET = b"\x1b[2m", b"\x1b[0m"
 
 
@@ -55,6 +59,8 @@ class Session:
         self.setup_sent = False
         self.expect_echo = b""       # a pasted command's echo may arrive after Enter: keep it here
         self.question = False        # at a question the device asked mid-command, not at its prompt
+        self.fd = -1                 # the device's pty
+        self.eat_erase = False       # after answering a pager prompt: drop the \b/space/\r it erases with
 
     # ---- writes ----------------------------------------------------------
     def tty(self, data):
@@ -98,7 +104,20 @@ class Session:
 
     # ---- bytes from the device --------------------------------------------
     def output(self, data):
+        if self.eat_erase:                             # the pager erasing its own prompt
+            data = ERASE.sub(b"", data, count=1)
+            if not data:
+                return
+            self.eat_erase = False
         self.buf += data
+        # The device's pager (`terminal length 0` was refused or not enough):
+        # answer it ourselves and drop the prompt, so long output just flows.
+        m = MORE.search(ANSI.sub(b"", self.buf))
+        if m and self.fd >= 0:
+            self.buf = self.buf[:self.buf.rfind(m.group(1))].rstrip(b" ")
+            self.eat_erase = True
+            os.write(self.fd, b" ")
+            return
         while True:
             nl = self.buf.find(b"\n")
             if nl < 0:
@@ -168,6 +187,7 @@ class Session:
         pid, fd = pty.fork()
         if pid == 0:
             os.execvp(self.argv[0], self.argv)
+        self.fd = fd
         rows, cols, _, _ = winsize(0)
         fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", rows, cols, 0, 0))
         signal.signal(signal.SIGWINCH, lambda *_: fcntl.ioctl(
