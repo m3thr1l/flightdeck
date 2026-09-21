@@ -30,6 +30,8 @@ ANSI   = re.compile(rb"\x1b\[[0-9;?]*[A-Za-z]|\r")
 # Dell/Netgear/Cisco SB `More: <space>,  Quit: q or CTRL+Z, One line: <return>`, and friends.
 MORE   = re.compile(rb"(--\s?More\s?--[^\n]*|<--- More --->|More:[^\n]*|Press any key to continue[^\n]*|\(END\))\s*$", re.I)
 ERASE  = re.compile(rb"^(\x1b\[[0-9]*K|[\b \r])+")     # how pagers wipe their prompt
+ASKS   = re.compile(rb"[?:\]\)]\s*$")                    # how a question ends: [yes/no]: ... [confirm] ... ?
+IDLE   = 0.3                                              # seconds of silence before a stalled line is a question
 DIM, RESET = b"\x1b[2m", b"\x1b[0m"
 
 
@@ -61,6 +63,7 @@ class Session:
         self.question = False        # at a question the device asked mid-command, not at its prompt
         self.fd = -1                 # the device's pty
         self.eat_erase = False       # after answering a pager prompt: drop the \b/space/\r it erases with
+        self.last_pager = 0.0        # when we last answered one: no question-guessing right after
 
     # ---- writes ----------------------------------------------------------
     def tty(self, data):
@@ -116,9 +119,9 @@ class Session:
         if m and self.fd >= 0:
             self.buf = self.buf[:self.buf.rfind(m.group(1))].rstrip(b" ")
             self.eat_erase = True
+            self.last_pager = time.time()
             os.write(self.fd, b" ")
-            return
-        while True:
+        while True:                                    # complete lines first, whatever is queued
             nl = self.buf.find(b"\n")
             if nl < 0:
                 break
@@ -160,7 +163,9 @@ class Session:
         # Nothing arrived for a moment and a line is left unterminated: the
         # device is waiting for an answer (Save? [yes/no]:, [confirm],
         # --More--). Show it here and take the answer as typed at the line.
-        if self.state == "output" and self.buf.strip():
+        if (self.state == "output" and self.buf.strip()
+                and ASKS.search(ANSI.sub(b"", self.buf).rstrip())
+                and time.time() - self.last_pager > 1.0):
             self.tty(b"\r\n" + self.buf if not self.buf.startswith(b"\r") else self.buf)
             self.buf = b""
             self.state = "line"
@@ -201,7 +206,7 @@ class Session:
                     os.write(fd, self.pending_setup)
                     self.pending_setup = b""
                     self.state = "output"
-                r, _, _ = select.select([0, fd], [], [], 0.15)
+                r, _, _ = select.select([0, fd], [], [], IDLE)
                 if not r:
                     self.idle()
                     continue
