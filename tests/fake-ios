@@ -33,6 +33,16 @@ try:
             elif ctx: ctx = ""
             else: w("Connection closed.\r\n"); break
         elif cmd == "terminal length 0": pass
+        elif cmd == "reload":
+            w("Proceed with reload? [confirm]"); a = os.read(fd, 1)
+            w("\r\n" + ("Reloading...\r\n" if a in (b"\r", b"y", b"Y") else "Reload cancelled.\r\n"))
+        elif cmd == "write":
+            w("Save configuration? [yes/no]: "); a = b""
+            while True:
+                c = os.read(fd, 1)
+                if c in (b"\r", b"\n"): break
+                a += c; w(c.decode())
+            w("\r\n" + ("Building configuration...\r\n[OK]\r\n" if a.strip().lower() in (b"yes", b"y") else "Not saved.\r\n"))
         elif cmd == "show version": w("Cisco IOS Software, fake-ios 1.0\r\nuptime is 3 days\r\n")
         elif cmd == "show ip interface brief": w("Interface   IP-Address   Status\r\nGi0/1       10.0.0.1     up\r\n")
         elif cmd: w(f"{' ' * (len(prompt()) + 1)}^\r\n% Invalid input detected at '^' marker.\r\n")

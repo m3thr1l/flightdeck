@@ -54,6 +54,7 @@ class Session:
         self.prompt = b""
         self.setup_sent = False
         self.expect_echo = b""       # a pasted command's echo may arrive after Enter: keep it here
+        self.question = False        # at a question the device asked mid-command, not at its prompt
 
     # ---- writes ----------------------------------------------------------
     def tty(self, data):
@@ -78,9 +79,10 @@ class Session:
             if b in (b"\r", b"\n"):
                 cmd = self.typed.strip()
                 self.typed = b""
-                if cmd and not self.help_pending:
-                    self.stamp(cmd)
+                if cmd and not self.help_pending and not self.question:
+                    self.stamp(cmd)                   # an answer to a question is not a command
                 self.expect_echo = cmd
+                self.question = False
                 self.state = "output"
             elif b in (b"\x7f", b"\x08"):
                 self.typed = self.typed[:-1]
@@ -117,6 +119,9 @@ class Session:
     def line(self, line):
         if self.state == "line":
             self.tty(line)                             # echo of what is being typed
+            if self.question:                          # a one-key answer ([confirm]): output follows
+                self.question = False
+                self.state = "output"
             return
         plain = ANSI.sub(b"", line)
         if self.expect_echo and plain.strip().endswith(self.expect_echo):
@@ -131,6 +136,17 @@ class Session:
             self.pane(self.err, line)
         else:
             self.pane(self.out, line)
+
+    def idle(self):
+        # Nothing arrived for a moment and a line is left unterminated: the
+        # device is waiting for an answer (Save? [yes/no]:, [confirm],
+        # --More--). Show it here and take the answer as typed at the line.
+        if self.state == "output" and self.buf.strip():
+            self.tty(b"\r\n" + self.buf if not self.buf.startswith(b"\r") else self.buf)
+            self.buf = b""
+            self.state = "line"
+            self.expect_echo = b""
+            self.question = True
 
     def at_prompt(self, m):
         if self.state == "output":
@@ -165,7 +181,10 @@ class Session:
                     os.write(fd, self.pending_setup)
                     self.pending_setup = b""
                     self.state = "output"
-                r, _, _ = select.select([0, fd], [], [])
+                r, _, _ = select.select([0, fd], [], [], 0.15)
+                if not r:
+                    self.idle()
+                    continue
                 if fd in r:
                     try:
                         data = os.read(fd, 65536)
