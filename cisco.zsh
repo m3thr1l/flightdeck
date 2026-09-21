@@ -1,7 +1,7 @@
 # cisco.zsh — flightdeck for network devices. Source from ~/.zshrc AFTER deck.zsh.
 #
-#   net HOST [SSH-ARGS]   ssh to a switch/router with the session split into
-#                         the deck's panes (see deck-net), follower in cisco mode
+#   deck net HOST [SSH-ARGS]   ssh to a switch/router with the session split
+#                         into the deck's panes (see deck-net), follower in cisco mode
 #   deck mode cisco       the follower mode on its own: shows the device's
 #                         answers to `?` (painted by deck-net during a session)
 #
@@ -15,13 +15,13 @@ typeset -ga DECK_NET_HOSTS                      # glob patterns of hosts `ssh` s
 _deck_mode_cisco_follow()  { : }               # nothing to follow at the shell prompt
 _deck_mode_cisco_repaint() { : }               # deck-net paints the pane itself
 _deck_mode_cisco_enter() {
-    [[ -n $DECK_HELP_TTY ]] && printf '\e[H\e[2J\e[2m cisco: the answer to ? appears here during `net HOST`\e[0m' >$DECK_HELP_TTY
+    [[ -n $DECK_HELP_TTY ]] && printf '\e[H\e[2J\e[2m cisco: the answer to ? appears here during `deck net HOST`\e[0m' >$DECK_HELP_TTY
 }
 DECK_MODES+=( cisco )
 
-net() {                                         # net HOST [SSH-ARGS...]
+_deck_cmd_net() {                               # deck net HOST [SSH-ARGS...]
     emulate -L zsh
-    (( $# )) || { print -u2 "usage: net HOST [SSH-ARGS...]"; return 2 }
+    (( $# )) || { print -u2 "usage: deck net HOST [SSH-ARGS...]"; return 2 }
     local prev=$DECK_MODE rc
     [[ -n $DECK_HELP_PANE ]] && _deck_mode cisco
     # One terminal (the prompt pane) through the shell's saved fds, as deck-tty
@@ -35,13 +35,13 @@ net() {                                         # net HOST [SSH-ARGS...]
     return $rc
 }
 
-# `ssh some-switch` typed under the deck: route it through net instead of the
+# `ssh some-switch` typed under the deck: route it through deck net instead of the
 # multiplexed, zoomed session deck gives Unix hosts.
 _deck_net_ssh() {
     local a h
     for a in "$@"; do [[ $a == -* ]] || { h=${a#*@}; break }; done
     local pat; for pat in $DECK_NET_HOSTS; do
-        [[ $h == ${~pat} ]] && { net "$@"; return }
+        [[ $h == ${~pat} ]] && { _deck_cmd_net "$@"; return }
     done
     command ssh "$@"
 }

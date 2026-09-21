@@ -12,7 +12,7 @@ install -m 755 "$src/deck-net" "$dst/"
 install -m 644 "$src/cisco.zsh" "$dst/"
 
 touch "$rc"
-grep -q 'deck\.zsh' "$rc" || echo "warning: flightdeck is not sourced in $rc; net will run unsplit" >&2
+grep -q 'deck\.zsh' "$rc" || echo "warning: flightdeck is not sourced in $rc; deck net will run unsplit" >&2
 line="source $dst/cisco.zsh"
 grep -qxF "$line" "$rc" || printf '%s\n' "$line" >>"$rc"     # appended = after flightdeck's line
-echo "Installed to $dst. Open a new zsh inside tmux, run 'deck', then 'net HOST'."
+echo "Installed to $dst. Open a new zsh inside tmux, run 'deck', then 'deck net HOST'."
