@@ -1,0 +1,203 @@
+#!/usr/bin/env python3
+"""deck-net — a network-device session with flightdeck's stream split.
+
+A switch has no stdout and stderr to separate, only one byte stream. This
+wrapper runs `ssh HOST` under a pty, watches that stream, and recreates the
+split by parsing it:
+
+    prompt + the line you type          -> the prompt pane (this terminal)
+    command output                      -> DECK_OUT_TTY
+    lines the device flags as errors    -> DECK_ERR_TTY   (% ..., the ^ marker line)
+    the answer to `?`                   -> DECK_HELP_TTY  (the follower pane)
+
+Each command is stamped into the output panes the way deck stamps shell
+commands, the prompt pane's title follows the device mode (Switch>, Switch#,
+Switch(config-if)#), and `terminal length 0` is sent once so the device does
+not paginate. With the deck off, everything goes to this terminal.
+
+    deck-net HOST [SSH-ARGS...]
+    deck-net --exec CMD [ARGS...]      run CMD instead of ssh (tests: fake-ios)
+
+Status: skeleton. Prompt detection is IOS/IOS-XE/NX-OS style and untested on
+real hardware; see README for what is next.
+"""
+import fcntl, os, pty, re, select, signal, struct, sys, termios, time, tty
+
+PROMPT = re.compile(rb"(?m)^(?P<host>[\w.-]+)(?P<mode>\([\w./-]*\))?(?P<lvl>[>#])")
+ERROR  = re.compile(rb"^(%|\s*\^\s*$|Command rejected|Invalid input|Ambiguous command)")
+ANSI   = re.compile(rb"\x1b\[[0-9;?]*[A-Za-z]|\r")
+DIM, RESET = b"\x1b[2m", b"\x1b[0m"
+
+
+def opentty(var):
+    path = os.environ.get(var)
+    try:
+        return os.open(path, os.O_WRONLY | os.O_NOCTTY) if path else -1
+    except OSError:
+        return -1
+
+
+def winsize(fd):
+    try:
+        return struct.unpack("HHHH", fcntl.ioctl(fd, termios.TIOCGWINSZ, b"\0" * 8))
+    except OSError:
+        return (24, 80, 0, 0)
+
+
+class Session:
+    def __init__(self, argv, out, err, help_):
+        self.argv, self.out, self.err, self.help = argv, out, err, help_
+        self.state = "line"          # line: prompt+typing echo -> tty ; output: command output -> panes
+        self.buf = b""               # unterminated tail of device output
+        self.typed = b""             # what the user has typed since the last prompt
+        self.help_pending = False
+        self.prompt = b""
+        self.setup_sent = False
+        self.expect_echo = b""       # a pasted command's echo may arrive after Enter: keep it here
+
+    # ---- writes ----------------------------------------------------------
+    def tty(self, data):
+        os.write(1, data)
+
+    def pane(self, fd, data):
+        os.write(fd if fd >= 0 else 1, data)
+
+    def stamp(self, cmd):
+        line = DIM + b"\xe2\x94\x80\xe2\x94\x80 " + time.strftime("%H:%M:%S").encode() + b" \xe2\x9d\xaf " + cmd + RESET + b"\r\n"
+        for fd in (self.out, self.err):
+            if fd >= 0:
+                os.write(fd, line)
+
+    def title(self, text):
+        self.tty(b"\x1b]2;" + text + b"\x07")
+
+    # ---- keys from the user ---------------------------------------------
+    def key(self, data):
+        for ch in data:
+            b = bytes([ch])
+            if b in (b"\r", b"\n"):
+                cmd = self.typed.strip()
+                self.typed = b""
+                if cmd and not self.help_pending:
+                    self.stamp(cmd)
+                self.expect_echo = cmd
+                self.state = "output"
+            elif b in (b"\x7f", b"\x08"):
+                self.typed = self.typed[:-1]
+            elif b == b"?":
+                self.help_pending = True
+                if self.help >= 0:
+                    os.write(self.help, b"\x1b[H\x1b[2J" + DIM + b"? " + self.typed + RESET + b"\r\n")
+                self.state = "output"
+            elif b == b"\x15":                       # ^U
+                self.typed = b""
+            elif ch >= 0x20:
+                self.typed += b
+
+    # ---- bytes from the device --------------------------------------------
+    def output(self, data):
+        self.buf += data
+        while True:
+            nl = self.buf.find(b"\n")
+            if nl < 0:
+                break
+            line, self.buf = self.buf[:nl + 1], self.buf[nl + 1:]
+            self.line(line)
+        # An unterminated tail that starts with a prompt: the device is back
+        # at the line. Show it, and everything typed after it, on this tty.
+        m = PROMPT.match(ANSI.sub(b"", self.buf))
+        if m:
+            self.at_prompt(m)
+            self.tty(self.buf)
+            self.buf = b""
+        elif self.state == "line":
+            self.tty(self.buf)
+            self.buf = b""
+
+    def line(self, line):
+        if self.state == "line":
+            self.tty(line)                             # echo of what is being typed
+            return
+        plain = ANSI.sub(b"", line)
+        if self.expect_echo and plain.strip().endswith(self.expect_echo):
+            self.expect_echo = b""                    # the device echoing the command, not output
+            self.tty(line)
+            return
+        if not plain.strip() and self.expect_echo == b"" and self.state == "output" and not self.buf:
+            return                                    # the newline ending the command line
+        if self.help_pending:
+            self.pane(self.help, line)
+        elif ERROR.match(plain):
+            self.pane(self.err, line)
+        else:
+            self.pane(self.out, line)
+
+    def at_prompt(self, m):
+        if self.state == "output":
+            self.tty(b"\r\n")                        # the line's own newline went to a pane
+        self.state = "line"
+        self.expect_echo = b""
+        self.help_pending = False
+        self.prompt = m.group(0)
+        mode = {b">": b"exec", b"#": b"priv"}[m.group("lvl")]
+        if m.group("mode"):
+            mode = m.group("mode")
+        self.title(b"stdin \xe2\x96\xb8 " + m.group("host") + b" " + mode)
+        if not self.setup_sent:
+            self.setup_sent = True
+            self.pending_setup = b"terminal length 0\r"
+
+    # ---- main loop --------------------------------------------------------
+    def run(self):
+        pid, fd = pty.fork()
+        if pid == 0:
+            os.execvp(self.argv[0], self.argv)
+        rows, cols, _, _ = winsize(0)
+        fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", rows, cols, 0, 0))
+        signal.signal(signal.SIGWINCH, lambda *_: fcntl.ioctl(
+            fd, termios.TIOCSWINSZ, struct.pack("HHHH", *winsize(0))))
+        old = termios.tcgetattr(0)
+        tty.setraw(0)
+        self.pending_setup = b""
+        try:
+            while True:
+                if self.pending_setup:
+                    os.write(fd, self.pending_setup)
+                    self.pending_setup = b""
+                    self.state = "output"
+                r, _, _ = select.select([0, fd], [], [])
+                if fd in r:
+                    try:
+                        data = os.read(fd, 65536)
+                    except OSError:
+                        data = b""
+                    if not data:
+                        break
+                    self.output(data)
+                if 0 in r:
+                    data = os.read(0, 65536)
+                    if not data:
+                        break
+                    self.key(data)
+                    os.write(fd, data)
+        finally:
+            termios.tcsetattr(0, termios.TCSADRAIN, old)
+            self.title(b"stdin")
+        _, status = os.waitpid(pid, 0)
+        return os.WEXITSTATUS(status) if os.WIFEXITED(status) else 128 + os.WTERMSIG(status)
+
+
+def main(argv):
+    if not argv or argv[0] in ("-h", "--help"):
+        print(__doc__.strip()); return 2
+    if argv[0] == "--exec":
+        cmd = argv[1:]
+    else:
+        cmd = ["ssh"] + os.environ.get("DECK_NET_SSH_OPTS", "").split() + argv
+    out, err, help_ = (opentty(v) if os.environ.get("DECK_ACTIVE") else -1
+                       for v in ("DECK_OUT_TTY", "DECK_ERR_TTY", "DECK_HELP_TTY"))
+    return Session(cmd, out, err, help_).run()
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
