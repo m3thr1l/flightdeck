@@ -8,6 +8,7 @@
 #   deck-tty CMD   same, but zoomed to the full window (external programs)
 #   step SCRIPT [ARGS]  run a shell script one command at a time, source on the right
 #   deck ssh HOST  log in to HOST with the remote shell's streams in these panes
+#   deck NAME ...  a plugin's subcommand: any function _deck_cmd_NAME
 #   Alt-Up / Alt-Down   scroll the follower pane;  Alt-h  toggle following
 #   Alt-m       cycle follower modes;   Alt-x   run the current line under step
 #   Alt-Enter / Ctrl-]   pick a path with fzf for the word under the cursor
@@ -58,6 +59,9 @@ deck() {
         (mode)   shift; _deck_mode "$@"; return ;;
         (ssh)    shift; _deck_remote "$@"; return ;;
         (attach) _deck_attach; return ;;
+        (?*)     # plugins add subcommands by defining _deck_cmd_NAME (see README)
+                 if (( $+functions[_deck_cmd_$1] )); then local c=$1; shift; _deck_cmd_$c "$@"; return; fi
+                 print -u2 "deck: unknown subcommand: $1"; return 2 ;;
     esac
     [[ -n $TMUX ]]          || { print -u2 "deck: not inside tmux"; return 1 }
     [[ -z $DECK_OUT_PANE ]] || { print -u2 "deck: already on (deck off to undo)"; return 1 }
