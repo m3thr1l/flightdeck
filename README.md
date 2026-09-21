@@ -34,7 +34,7 @@ sudo pacman -S --needed tmux zsh man-db man-pages procps-ng
 git clone <this repo> && cd flightdeck && ./install.sh
 ```
 
-The installer copies four files to `~/.config/deck`, adds one `source` line to
+The installer copies the files to `~/.config/deck`, adds one `source` line to
 `~/.zshrc` and one `source-file` line to `~/.tmux.conf`. Start a new zsh inside
 tmux and run `deck`.
 
@@ -44,10 +44,21 @@ tmux and run `deck`.
 |----------------------|--------|
 | `deck`               | Build the layout around the current pane and split the streams |
 | `deck off`           | Restore the streams, close the extra panes |
+| `deck mode [NAME]`   | Show or switch what the right-hand pane follows (see below) |
 | `here CMD`           | Run one command un-split in the prompt pane (works for functions and builtins) |
 | `deck-tty CMD`       | Run one external program un-split *and* zoomed to the full window |
-| Alt-Up / Alt-Down    | Scroll the man pane |
-| Alt-h                | Toggle man following |
+| `step SCRIPT [ARGS]` | Run a shell script one command at a time, its source on the right |
+| `deck ssh HOST`      | Log in to HOST with the remote shell's streams in these panes |
+| Alt-Up / Alt-Down    | Scroll the follower pane |
+| Alt-h                | Toggle following |
+| Alt-m                | Cycle follower modes |
+| Alt-x                | Run the current command line under `step` |
+| Alt-Enter, Ctrl-]    | Pick a path with fzf for the word under the cursor, in any mode |
+
+On a Mac, Alt is the Option key. Option-h and Option-m work as-is (the
+typed characters ˙ and µ are bound too), but Option-Up/Down needs the
+terminal to send Option as Meta: Terminal.app → Profiles → Keyboard →
+"Use Option as Meta key"; iTerm2 → Profiles → Keys → Left Option key: Esc+.
 | Mouse wheel / drag   | Scroll and select inside any pane (copies to the system clipboard) |
 
 Editors, pagers and other full-screen programs are detected and run through
@@ -104,6 +115,67 @@ so that programs started *by other programs* (git's pager, the commit editor,
 man) are covered, and each name in `DECK_TTY_CMDS` is shadowed by a small
 function for the ones you type yourself. `deck off` restores everything.
 
+### Follower modes
+
+The right-hand pane is a slot. `DECK_MODE` names what it currently follows;
+`man` is the built-in mode. A mode is a set of zsh functions named
+`_deck_mode_NAME_HOOK`:
+
+| Hook      | Called |
+|-----------|--------|
+| `follow`  | from ZLE after every keystroke; decide what to show from `$LBUFFER`/`$RBUFFER` and paint it if it changed |
+| `repaint` | on Alt-Up / Alt-Down; redraw the current thing offset by `$_deck_scroll` |
+| `enter`, `leave` | optionally, when the mode is switched to or away from |
+
+`$_deck_last` holds whatever the mode uses to notice "nothing changed", and
+both it and `$_deck_scroll` are reset on every switch. Define the functions,
+then `DECK_MODES+=( NAME )`; `deck mode NAME` and Alt-m pick it up.
+
+### Modes: `script` and `files`
+
+`deck mode script` shows the source of the script named on the command line.
+`step ./build.sh args` (or Alt-x on a typed command line) runs a sh, bash or
+zsh script under a `DEBUG` trap in a fresh shell: before each command the
+trap prints `+ file:line: command` on stderr, paints the source around that
+line in the right-hand pane with a marker, and waits for a key: `n`, Enter or
+space for the next command, `c` to run on without stopping, `q` to abort
+(exit 130). Line numbers inside functions are absolute in both shells. The
+mode is switched to `script` for the run and back afterwards.
+
+The man follower is path-aware: when the cursor is on an argument that looks
+like a path (has a `/`, starts with `~` or `host:`, or is the start of a name
+in the current directory) the pane shows that directory's listing instead,
+local or `host:path` over the shared ssh connection, with the first entry
+matching what has been typed marked. Move the cursor back to an option and
+the man page returns. Alt-Enter or Ctrl-] runs fzf over the tree under the
+cursor's word (zoomed) and replaces the word with the pick; this works in
+every mode. `deck mode files` keeps the listing up regardless of what is
+under the cursor. Remote listings are cached until `files` mode is entered.
+
+### ssh
+
+`deck` shares ssh connections: `DECK_SSH_OPTS` (ControlMaster, a socket under
+`~/.ssh`, ControlPersist 10 minutes) is added to the `ssh` you type while the
+deck is on, so that later remote questions from the follower ride on the same
+connection without a handshake and never prompt. Set `DECK_SSH_OPTS=()` before
+sourcing to opt out.
+
+`deck ssh HOST` extends the placeholder trick over the wire: three held
+`ssh -tt` sessions give the remote side real ptys whose output is this
+window's panes, the helpers are copied to `DECK_REMOTE_DIR` (`~/.config/deck`
+on HOST), and a login zsh there runs your own startup files and then
+`deck attach`, which redirects its streams the way the local shell does. HOST
+needs zsh and man. The first connection may ask for a password; that opens
+the shared connection everything else rides on. Pane titles are set through
+OSC 2 escapes since there is no tmux on that side, editors run unzoomed, and
+the remote pty sizes are set once, at login.
+
+Programs given the prompt pane as their terminal (`deck-tty`, the remote
+session) get the shell's saved copies of its original stdout and stderr,
+never a fresh open of `/dev/tty`. Same device, but observed on macOS: with
+ssh's stdout on a newly opened `/dev/tty`, the remote shell is hung up within
+a second of starting.
+
 ### The man follower
 
 ZLE runs a `line-pre-redraw` hook after every keystroke and cursor movement.
@@ -140,6 +212,12 @@ ssh. Releasing a drag copies without leaving copy mode, so the view does not
 snap back to the bottom of a log.
 
 ## Known limits
+
+Plugins that assume the deck runs under tmux should check `$TMUX` before
+calling it: over `deck ssh` the remote shell has `DECK_OUT_PANE=remote` and no
+tmux server. Remote listings and man pages are as of the remote host; the
+follower's local cache of remote directory listings is cleared whenever
+`files` mode is entered.
 
 `sudo vim` is not caught by the shadow functions; use `deck-tty sudo vim` or
 `sudoedit`. `sudo -u USER cmd` confuses the follower, which takes `USER` for
