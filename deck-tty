@@ -14,10 +14,21 @@
 
 [ $# -gt 0 ] || { echo "usage: deck-tty CMD [ARGS...]" >&2; exit 2; }
 
-# Deck off, or not in tmux: be invisible.
-if [ -z "$DECK_ACTIVE" ] || [ -z "$TMUX_PANE" ]; then
-    exec "$@"
-fi
+# Deck off: be invisible.
+[ -n "$DECK_ACTIVE" ] || exec "$@"
+
+# The terminal to give the program: the shell's saved copies of its original
+# stdout/stderr (fd numbers exported by deck), which are the prompt pane.
+# Not a fresh open of /dev/tty: that is the same device, but ssh with its
+# stdout on a newly opened /dev/tty gets its remote shell hung up within a
+# second (macOS, observed). Fall back to /dev/tty when the fds did not
+# survive the way here (some programs close inherited descriptors).
+out=/dev/tty err=/dev/tty
+[ -n "$DECK_SAVE_OUT" ] && ( : >&"$DECK_SAVE_OUT" ) 2>/dev/null && out=/dev/fd/$DECK_SAVE_OUT
+[ -n "$DECK_SAVE_ERR" ] && ( : >&"$DECK_SAVE_ERR" ) 2>/dev/null && err=/dev/fd/$DECK_SAVE_ERR
+
+# Remote deck (attached over ssh, no tmux on this side): one terminal, no zoom.
+[ -n "$TMUX_PANE" ] || exec "$@" >"$out" 2>"$err"
 
 zoomed() { [ "$(tmux display-message -p -t "$TMUX_PANE" '#{window_zoomed_flag}')" = 1 ]; }
 
@@ -26,7 +37,7 @@ if ! zoomed; then
     tmux resize-pane -Z -t "$TMUX_PANE" && unzoom=1
 fi
 
-"$@" >/dev/tty 2>/dev/tty
+"$@" >"$out" 2>"$err"
 rc=$?
 
 # Only undo a zoom we made, and only if the user hasn't already undone it.

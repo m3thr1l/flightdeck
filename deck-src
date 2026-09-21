@@ -1,0 +1,41 @@
+#!/bin/bash
+# deck-src — paint a window of a text file onto another pane's tty, with a
+# marker on one line. The follower's painter for scripts (deck-man's sibling).
+#
+#   deck-src TTY FILE LINE SCROLL [STATUS]
+#
+#   TTY     pty device of the follower pane
+#   FILE    file to show
+#   LINE    line to mark and centre on (0 = none, start at the top)
+#   SCROLL  line offset added to the computed position (manual scrolling)
+#   STATUS  text for the status bar (default: FILE)
+
+tty=$1 file=$2 line=${3:-0} scroll=${4:-0} status=$5
+[[ -w $tty && -r $file ]] || exit 2
+read -r rows cols < <(stty size <"$tty") || exit 2
+(( rows > 2 && cols > 20 )) || exit 2
+esc=$'\e'
+
+total=$(wc -l <"$file"); total=$(( total ))
+body=$(( rows - 1 ))
+if (( line > 0 )); then top=$(( line - body / 3 + scroll ))   # marker a third of the way down
+else top=$(( 1 + scroll )); fi
+(( top > total - body + 1 )) && top=$(( total - body + 1 ))
+(( top < 1 )) && top=1
+: "${status:=$file}"
+
+# Same frame technique as deck-man: no auto-wrap, home, clear, status bar in
+# reverse video, then the lines, all in one write. Tabs become 4 spaces so
+# that clipping at the pane edge is predictable.
+frame=$(
+    printf '%s[?7l%s[H%s[2J%s[7m %-*.*s%s[0m' "$esc" "$esc" "$esc" "$esc" \
+        $(( cols - 1 )) $(( cols - 1 )) "$status  [$top/$total]" "$esc"
+    awk -v s="$top" -v e=$(( top + body - 1 )) -v t="$line" -v w=$(( cols - 7 )) '
+        NR > e { exit }
+        NR >= s {
+            gsub(/\t/, "    ")
+            mark = (NR == t) ? "\033[1;33m>\033[0m" : " "
+            printf "\n%s\033[2m%4d\033[0m %s", mark, NR, substr($0, 1, w)
+        }' "$file"
+)
+printf '%s' "$frame" >"$tty"
