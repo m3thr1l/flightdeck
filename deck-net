@@ -72,6 +72,8 @@ class Session:
         self.col0 = True             # this terminal's cursor is at column 0
         self.last_pager = 0.0        # when we last answered a pager prompt
         self.pending_setup = b""
+        self.last_title = b""        # reasserted once when quiet: deck's own delayed
+        self.title_set_at = 0.0      # title-setter fires ~150ms after the session starts
 
     # ---- writes ----------------------------------------------------------
     def tty(self, data):
@@ -90,6 +92,7 @@ class Session:
 
     def title(self, text):
         os.write(1, b"\x1b]2;" + text + b"\x07")
+        self.last_title, self.title_set_at = text, time.time()
 
     def unshow(self):
         if self.shown:
@@ -180,6 +183,9 @@ class Session:
             self.pane(self.out, line)
 
     def idle(self):
+        if self.last_title and 0 < self.title_set_at < time.time() - 0.5:
+            os.write(1, b"\x1b]2;" + self.last_title + b"\x07")
+            self.title_set_at = 0.0                    # once is enough
         # Silence, with a line left unterminated: possibly a question (Save?
         # [yes/no]:, [confirm]). Show it here so it can be answered; it stays
         # in the stream and is routed normally once the device finishes it.

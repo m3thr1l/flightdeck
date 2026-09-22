@@ -18,6 +18,8 @@ try:
         if c == "?":
             key = line.strip().split(" ")[0] if line.strip() else ""
             w("?\r\n" + help_.get(key, "% Unrecognized command\n").replace("\n", "\r\n") + prompt() + line); continue
+        if c == "\x15":                                   # ^U: clear the line
+            w("\b \b" * len(line)); line = ""; continue
         if c in ("\x7f", "\x08"):
             if line: line = line[:-1]; w("\b \b")
             continue
