@@ -30,7 +30,6 @@ ANSI   = re.compile(rb"\x1b\[[0-9;?]*[A-Za-z]|\r")
 # Dell/Netgear/Cisco SB `More: <space>,  Quit: q or CTRL+Z, One line: <return>`, and friends.
 MORE   = re.compile(rb"(--\s?More\s?--[^\n]*|<--- More --->|More:[^\n]*|Press any key to continue[^\n]*|\(END\))\s*$", re.I)
 ERASE  = re.compile(rb"^(\x1b\[[0-9]*K|[\b \r])+")     # how pagers wipe their prompt
-ASKS   = re.compile(rb"[?:\]\)]\s*$")                    # how a question ends: [yes/no]: ... [confirm] ... ?
 IDLE   = 0.3                                              # seconds of silence before a stalled line is a question
 DIM, RESET = b"\x1b[2m", b"\x1b[0m"
 
@@ -51,23 +50,34 @@ def winsize(fd):
 
 
 class Session:
+    """State machine over the device's byte stream.
+
+    line    the device is at its prompt: bytes are the echo of what is typed
+            and go to this terminal
+    output  a command is running: complete lines go to the panes; an
+            unterminated tail that stalls is shown here provisionally (it may
+            be a question) but stays in the stream, so if the device finishes
+            the line it is erased here and routed like any other line.
+    """
     def __init__(self, argv, out, err, help_):
         self.argv, self.out, self.err, self.help = argv, out, err, help_
-        self.state = "line"          # line: prompt+typing echo -> tty ; output: command output -> panes
-        self.buf = b""               # unterminated tail of device output
-        self.typed = b""             # what the user has typed since the last prompt
-        self.help_pending = False
-        self.prompt = b""
-        self.setup_sent = False
-        self.expect_echo = b""       # a pasted command's echo may arrive after Enter: keep it here
-        self.question = False        # at a question the device asked mid-command, not at its prompt
         self.fd = -1                 # the device's pty
-        self.eat_erase = False       # after answering a pager prompt: drop the \b/space/\r it erases with
-        self.last_pager = 0.0        # when we last answered one: no question-guessing right after
+        self.state = "line"
+        self.buf = b""               # unterminated tail of device output
+        self.typed = b""             # what has been typed since the last prompt
+        self.help_pending = False    # the last key sent was ?: the answer goes to the follower pane
+        self.expect_echo = b""       # a pasted command's echo may arrive after Enter
+        self.drop_nl = False         # the newline the device echoes after Enter (we printed our own)
+        self.shown = b""             # provisional tail currently displayed on this terminal
+        self.col0 = True             # this terminal's cursor is at column 0
+        self.last_pager = 0.0        # when we last answered a pager prompt
+        self.pending_setup = b""
 
     # ---- writes ----------------------------------------------------------
     def tty(self, data):
-        os.write(1, data)
+        if data:
+            os.write(1, data)
+            self.col0 = data.endswith((b"\n", b"\x1b[K"))
 
     def pane(self, fd, data):
         os.write(fd if fd >= 0 else 1, data)
@@ -79,41 +89,52 @@ class Session:
                 os.write(fd, line)
 
     def title(self, text):
-        self.tty(b"\x1b]2;" + text + b"\x07")
+        os.write(1, b"\x1b]2;" + text + b"\x07")
+
+    def unshow(self):
+        if self.shown:
+            self.tty(b"\r\x1b[K")
+            self.shown = b""
 
     # ---- keys from the user ---------------------------------------------
     def key(self, data):
         for ch in data:
             b = bytes([ch])
             if b in (b"\r", b"\n"):
-                cmd = self.typed.strip()
+                if self.state == "line":                 # a command
+                    cmd = self.typed.strip()
+                    if cmd and not self.help_pending:
+                        self.stamp(cmd)
+                    self.expect_echo = cmd
+                    self.drop_nl = True
+                    self.tty(b"\r\n")
+                    self.state = "output"
+                else:                                    # an answer to a question
+                    self.unshow()
                 self.typed = b""
-                if cmd and not self.help_pending and not self.question:
-                    self.stamp(cmd)                   # an answer to a question is not a command
-                self.expect_echo = cmd
-                self.question = False
-                self.state = "output"
             elif b in (b"\x7f", b"\x08"):
                 self.typed = self.typed[:-1]
-            elif b == b"?":
+            elif b == b"?" and self.state == "line":
                 self.help_pending = True
                 if self.help >= 0:
                     os.write(self.help, b"\x1b[H\x1b[2J" + DIM + b"? " + self.typed + RESET + b"\r\n")
+                self.tty(b"\r\n")
                 self.state = "output"
-            elif b == b"\x15":                       # ^U
+            elif b == b"\x15":                             # ^U
                 self.typed = b""
             elif ch >= 0x20:
                 self.typed += b
 
     # ---- bytes from the device --------------------------------------------
     def output(self, data):
-        if self.eat_erase:                             # the pager erasing its own prompt
+        if self.eat_erase:                             # the pager wiping its own prompt
             data = ERASE.sub(b"", data, count=1)
             if not data:
                 return
             self.eat_erase = False
+        self.unshow()                                  # whatever was provisional is superseded
         self.buf += data
-        # The device's pager (`terminal length 0` was refused or not enough):
+        # The device's pager (`terminal length 0` refused or not enough):
         # answer it ourselves and drop the prompt, so long output just flows.
         m = MORE.search(ANSI.sub(b"", self.buf))
         if m and self.fd >= 0:
@@ -141,17 +162,16 @@ class Session:
     def line(self, line):
         if self.state == "line":
             self.tty(line)                             # echo of what is being typed
-            if self.question:                          # a one-key answer ([confirm]): output follows
-                self.question = False
-                self.state = "output"
             return
         plain = ANSI.sub(b"", line)
         if self.expect_echo and plain.strip().endswith(self.expect_echo):
-            self.expect_echo = b""                    # the device echoing the command, not output
-            self.tty(line)
+            self.expect_echo = b""                     # the device echoing the command (arrived after Enter)
+            self.drop_nl = False
             return
-        if not plain.strip() and self.expect_echo == b"" and self.state == "output" and not self.buf:
-            return                                    # the newline ending the command line
+        if self.drop_nl:
+            self.drop_nl = False
+            if not plain.strip():
+                return                                 # the newline after the command line
         if self.help_pending:
             self.pane(self.help, line)
         elif ERROR.match(plain):
@@ -160,31 +180,29 @@ class Session:
             self.pane(self.out, line)
 
     def idle(self):
-        # Nothing arrived for a moment and a line is left unterminated: the
-        # device is waiting for an answer (Save? [yes/no]:, [confirm],
-        # --More--). Show it here and take the answer as typed at the line.
-        if (self.state == "output" and self.buf.strip()
-                and ASKS.search(ANSI.sub(b"", self.buf).rstrip())
-                and time.time() - self.last_pager > 1.0):
-            self.tty(b"\r\n" + self.buf if not self.buf.startswith(b"\r") else self.buf)
-            self.buf = b""
-            self.state = "line"
-            self.expect_echo = b""
-            self.question = True
+        # Silence, with a line left unterminated: possibly a question (Save?
+        # [yes/no]:, [confirm]). Show it here so it can be answered; it stays
+        # in the stream and is routed normally once the device finishes it.
+        if self.state == "output" and self.buf.strip() and time.time() - self.last_pager > 1.0:
+            tail = ANSI.sub(b"", self.buf)
+            if tail != self.shown:
+                self.tty(b"\r\x1b[K" + tail)
+                self.shown = tail
 
     def at_prompt(self, m):
-        if self.state == "output":
-            self.tty(b"\r\n")                        # the line's own newline went to a pane
+        self.unshow()
+        if not self.col0:
+            self.tty(b"\r\n")
         self.state = "line"
-        self.expect_echo = b""
         self.help_pending = False
-        self.prompt = m.group(0)
+        self.expect_echo = b""
+        self.drop_nl = False
         mode = {b">": b"exec", b"#": b"priv"}[m.group("lvl")]
         if m.group("mode"):
             mode = m.group("mode")
         self.title(b"stdin \xe2\x96\xb8 " + m.group("host") + b" " + mode)
-        if not self.setup_sent:
-            self.setup_sent = True
+        if not self.pending_setup and not getattr(self, "setup_done", False):
+            self.setup_done = True
             self.pending_setup = b"terminal length 0\r"
 
     # ---- main loop --------------------------------------------------------
@@ -193,18 +211,21 @@ class Session:
         if pid == 0:
             os.execvp(self.argv[0], self.argv)
         self.fd = fd
+        self.eat_erase = False
         rows, cols, _, _ = winsize(0)
         fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", rows, cols, 0, 0))
         signal.signal(signal.SIGWINCH, lambda *_: fcntl.ioctl(
             fd, termios.TIOCSWINSZ, struct.pack("HHHH", *winsize(0))))
         old = termios.tcgetattr(0)
         tty.setraw(0)
-        self.pending_setup = b""
         try:
             while True:
                 if self.pending_setup:
                     os.write(fd, self.pending_setup)
+                    self.expect_echo = self.pending_setup.strip()
+                    self.drop_nl = True
                     self.pending_setup = b""
+                    self.tty(b"\r\n")
                     self.state = "output"
                 r, _, _ = select.select([0, fd], [], [], IDLE)
                 if not r:
