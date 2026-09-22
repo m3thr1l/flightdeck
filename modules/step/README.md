@@ -1,6 +1,6 @@
 # flightdeck-step
 
-Run a script one line at a time inside [flightdeck](../flightdeck), with its
+Run a script one line at a time inside [flightdeck](../..), with its
 source on the right and everything it does, including what it tries to hide,
 in the output panes.
 
@@ -29,13 +29,11 @@ Python scripts.
 
 ## Install
 
+From the flightdeck checkout:
+
 ```sh
-./install.sh
+./install.sh --modules step
 ```
-
-Copies three files to `~/.config/deck-step` and adds one `source` line to
-`~/.zshrc`, after flightdeck's.
-
 ## What you see
 
 **Shell scripts** run under a `DEBUG` trap in a fresh bash or zsh chosen from

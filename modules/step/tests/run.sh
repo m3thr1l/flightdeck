@@ -4,7 +4,7 @@ set -u
 cd "$(dirname "$0")/.."
 zsh -n step.zsh && sh -n deck-step && sh -n install.sh && python3 -c "import ast; ast.parse(open('deck-step-py').read())" || exit 1
 echo "ok   syntax"
-FLIGHTDECK=${FLIGHTDECK:-$(cd ../flightdeck && pwd)}
+FLIGHTDECK=${FLIGHTDECK:-$(cd ../.. && pwd)}
 . "$FLIGHTDECK/tests/harness.sh"
 harness_start "$PWD" "$PWD/step.zsh"
 OUT=$(pane stdout); ERR=$(pane stderr)

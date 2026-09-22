@@ -1,6 +1,6 @@
 # flightdeck-cisco
 
-[flightdeck](../flightdeck) for network devices. A switch or router gives you
+[flightdeck](../..) for network devices. A switch or router gives you
 one byte stream and no man pages, so the deck's tricks do not apply directly.
 This plugin recreates them by watching the stream:
 
@@ -33,13 +33,11 @@ flightdeck, zsh, tmux, Python 3.8+ (standard library only).
 
 ## Install
 
+From the flightdeck checkout:
+
 ```sh
-./install.sh
+./install.sh --modules cisco
 ```
-
-Copies two files to `~/.config/deck-cisco` and adds one `source` line to
-`~/.zshrc`, after flightdeck's.
-
 ## Use
 
 | Command            | Effect |
