@@ -7,7 +7,7 @@ dst=${XDG_CONFIG_HOME:-$HOME/.config}/deck
 
 mkdir -p "$dst"
 install -m 644 "$src/deck.zsh" "$src/deck.tmux.conf" "$dst/"
-install -m 755 "$src/deck-man" "$src/deck-tty" "$src/deck-src" "$src/deck-step" "$dst/"
+install -m 755 "$src/deck-man" "$src/deck-tty" "$src/deck-src" "$dst/"
 
 add_line() {   # add_line FILE LINE
     touch "$1"
