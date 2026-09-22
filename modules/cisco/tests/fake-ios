@@ -1,0 +1,65 @@
+#!/usr/bin/env python3
+"""A few lines of IOS-flavoured CLI for testing deck-net without a switch:
+prompt per mode, echo, `?` help, `%` errors, enable / conf t / end / exit."""
+import sys, os, tty, termios, time
+host, mode = "Switch", ">"
+ctx = ""
+help_ = {"show": "  interfaces  Interface status and configuration\n  ip          IP information\n  version     System hardware and software status\n",
+         "": "  enable      Turn on privileged commands\n  show        Show running system information\n  exit        Exit from the EXEC\n"}
+def prompt(): return f"{host}{ctx}{mode}"
+def w(s): sys.stdout.write(s); sys.stdout.flush()
+fd = sys.stdin.fileno(); old = termios.tcgetattr(fd); tty.setraw(fd)
+try:
+    w(prompt()); line = ""
+    while True:
+        ch = os.read(fd, 1)
+        if not ch: break
+        c = ch.decode(errors="replace")
+        if c == "?":
+            key = line.strip().split(" ")[0] if line.strip() else ""
+            w("?\r\n" + help_.get(key, "% Unrecognized command\n").replace("\n", "\r\n") + prompt() + line); continue
+        if c == "\x15":                                   # ^U: clear the line
+            w("\b \b" * len(line)); line = ""; continue
+        if c in ("\x7f", "\x08"):
+            if line: line = line[:-1]; w("\b \b")
+            continue
+        if c not in ("\r", "\n"):
+            line += c; w(c); continue
+        w("\r\n"); cmd = line.strip(); line = ""
+        if cmd == "enable": mode = "#"
+        elif cmd in ("conf t", "configure terminal") and mode == "#": ctx = "(config)"
+        elif cmd.startswith("interface ") and ctx: ctx = "(config-if)"
+        elif cmd == "end": ctx = ""
+        elif cmd == "exit":
+            if ctx == "(config-if)": ctx = "(config)"
+            elif ctx: ctx = ""
+            else: w("Connection closed.\r\n"); break
+        elif cmd == "terminal length 0": pass
+        elif cmd == "reload":
+            w("Proceed with reload? [confirm]"); a = os.read(fd, 1)
+            w("\r\n" + ("Reloading...\r\n" if a in (b"\r", b"y", b"Y") else "Reload cancelled.\r\n"))
+        elif cmd == "write":
+            w("Save configuration? [yes/no]: "); a = b""
+            while True:
+                c = os.read(fd, 1)
+                if c in (b"\r", b"\n"): break
+                a += c; w(c.decode())
+            w("\r\n" + ("Building configuration...\r\n[OK]\r\n" if a.strip().lower() in (b"yes", b"y") else "Not saved.\r\n"))
+        elif cmd == "show version": w("Cisco IOS Software, fake-ios 1.0\r\nuptime is 3 days\r\n")
+        elif cmd == "show long":
+            for i in range(1, 8):
+                w(f"line {i} of a long listing\r\n")
+                if i % 3 == 0:
+                    w(" --More-- "); os.read(fd, 1); w("\r" + " " * 10 + "\r"); time.sleep(0.5)   # slow to resume
+        elif cmd == "show long2":                       # small-business style pager
+            for i in range(1, 6):
+                w(f"entry {i}\r\n")
+                if i % 2 == 0:
+                    w("More: <space>,  Quit: q or CTRL+Z, One line: <return> "); os.read(fd, 1); w("\r\x1b[K")
+        elif cmd == "show slow":                        # a line that stalls mid-way
+            w("first half of a slow"); time.sleep(0.6); w(" line\r\nsecond line\r\n")
+        elif cmd == "show ip interface brief": w("Interface   IP-Address   Status\r\nGi0/1       10.0.0.1     up\r\n")
+        elif cmd: w(f"{' ' * (len(prompt()) + 1)}^\r\n% Invalid input detected at '^' marker.\r\n")
+        w(prompt())
+finally:
+    termios.tcsetattr(fd, termios.TCSADRAIN, old)

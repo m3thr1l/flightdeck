@@ -34,8 +34,9 @@ sudo pacman -S --needed tmux zsh man-db man-pages procps-ng
 git clone <this repo> && cd flightdeck && ./install.sh
 ```
 
-The installer copies the files to `~/.config/deck`, adds one `source` line to
-`~/.zshrc` and one `source-file` line to `~/.tmux.conf`. Start a new zsh inside
+The installer copies the core to `~/.config/deck`, adds one `source` line to
+`~/.zshrc` and one `source-file` line to `~/.tmux.conf`; `--modules a,b` or
+`--all` adds modules (see below). Start a new zsh inside
 tmux and run `deck`.
 
 ## Use
@@ -132,14 +133,24 @@ then `DECK_MODES+=( NAME )`; `deck mode NAME` and Alt-m pick it up.
 Plugins add subcommands the same way: a function `_deck_cmd_NAME` is run by
 `deck NAME ...`, so nothing on `$PATH` gets shadowed.
 
-### Plugins
+### Modules
 
-Two things ride on the mode and subcommand hooks and live in their own
-repositories: [flightdeck-step](../flightdeck-step) (`deck step SCRIPT`, run a
-shell or Python script one line at a time with its source on the right) and
-[flightdeck-cisco](../flightdeck-cisco) (`deck net HOST`, the stream split for
-network devices). `deck-src`, the painter that puts a file with a marked line
-on the follower pane, stays here because `files` mode uses it too.
+Everything that rides on the mode and subcommand hooks lives under
+`modules/`, one directory each, installed on request:
+
+| Module | Gives you |
+|--------|-----------|
+| [step](modules/step) | `deck step SCRIPT`: run a shell or Python script one line at a time, source on the right, hidden output surfaced |
+| [cisco](modules/cisco) | `deck net HOST`: the stream split for switches and routers, `?` help in the follower |
+| [net](modules/net) | `deck mode net` and `deck hosts`: a host inventory fed by nmap and arp, the card of the host under the cursor |
+| [history](modules/history) | `deck history`: every command recorded with its stdout and stderr, searchable, hash-chained |
+
+`./install.sh --modules step,net` or `--all`; `--list` describes them. A
+module is a zsh file that defines `_deck_mode_NAME_*` and `_deck_cmd_NAME`
+functions and appends to `DECK_MODES`, plus whatever helpers it needs, and
+its own `tests/run.sh` on the shared harness. `deck-src`, the painter that
+puts a file with a marked line on the follower pane, is core because `files`
+mode uses it too.
 
 ### Mode: `files`
 

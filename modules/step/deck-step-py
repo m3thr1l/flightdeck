@@ -1,0 +1,128 @@
+#!/usr/bin/env python3
+"""deck-step-py SCRIPT [ARGS...] — run a Python script one line at a time.
+
+The Python half of deck-step. The script runs as __main__ under a trace
+function that stops before every line of the script itself (not of the
+modules it imports). Before each line:
+
+    ── file:line ❯ source          stamped on stdout and stderr (the panes)
+    the source around that line    painted on $DECK_HELP_TTY through deck-src
+    name = value                   for the names an assignment on the previous
+                                   line bound, from the frame's locals
+then a key is read from the terminal:  n / Enter / space  next line,
+c  continue without stopping,  q  abort (exit 130).
+"""
+import ast, os, sys, termios, time, tty
+
+DIM, RESET = "\x1b[2m", "\x1b[0m"
+
+
+class Stepper:
+    def __init__(self, path):
+        self.path = os.path.realpath(path)
+        self.src = open(self.path, encoding="utf-8", errors="replace").read().splitlines()
+        self.out = os.dup(1)                 # the script's own streams, whatever it does to sys.stdout
+        self.err = os.dup(2)
+        self.help = os.environ.get("DECK_HELP_TTY") or ""
+        self.painter = os.environ.get("DECK_SRC") or ""
+        self.go = False
+        self.pending = {}                    # frame -> names bound by its last line, shown at its next stop
+        self.assigns = {}                    # lineno -> names bound on that line
+        try:
+            for node in ast.walk(ast.parse("\n".join(self.src), self.path)):
+                names = []
+                if isinstance(node, ast.Assign):
+                    for t in node.targets:
+                        names += [n.id for n in ast.walk(t) if isinstance(n, ast.Name)]
+                elif isinstance(node, (ast.AugAssign, ast.AnnAssign)) and isinstance(node.target, ast.Name):
+                    names = [node.target.id]
+                if names:
+                    self.assigns[node.lineno] = names
+        except SyntaxError:
+            pass
+
+    def write(self, fd, text):
+        os.write(fd, text.encode())
+
+    def stamp(self, line, text):
+        s = f"{DIM}── {os.path.basename(self.path)}:{line} ❯ {text}{RESET}\n"
+        self.write(self.out, s)
+        self.write(self.err, s)
+
+    def paint(self, line):
+        if self.help and self.painter:
+            status = f"{os.path.basename(self.path)}:{line}   [n]ext  [c]ontinue  [q]uit"
+            pid = os.fork()
+            if pid == 0:
+                os.execv(self.painter, [self.painter, self.help, self.path, str(line), "0", status])
+            os.waitpid(pid, 0)
+
+    def key(self):
+        with open("/dev/tty", "rb", buffering=0) as t:
+            fd = t.fileno()
+            old = termios.tcgetattr(fd)
+            try:
+                tty.setraw(fd)
+                while True:
+                    k = t.read(1)
+                    if k in (b"n", b"\r", b"\n", b" "):
+                        return
+                    if k == b"c":
+                        self.go = True
+                        return
+                    if k in (b"q", b"\x03"):
+                        raise SystemExit(130)
+            finally:
+                termios.tcsetattr(fd, termios.TCSADRAIN, old)
+
+    def show_pending(self, frame):
+        for n in self.pending.pop(frame, ()):
+            if n in frame.f_locals:
+                v = repr(frame.f_locals[n])
+                if len(v) > 200:
+                    v = v[:200] + "…"
+                self.write(self.out, f"{DIM}   {n} = {v}{RESET}\n")
+
+    def trace(self, frame, event, arg):
+        if frame.f_code.co_filename != self.path:
+            return None                      # not our file: do not trace inside it
+        if event == "call":
+            return self.trace
+        if event == "line":
+            self.show_pending(frame)
+            line = frame.f_lineno
+            text = self.src[line - 1].strip() if 0 < line <= len(self.src) else ""
+            self.stamp(line, text)
+            self.paint(line)
+            if line in self.assigns:
+                self.pending[frame] = self.assigns[line]
+            if not self.go:
+                self.key()
+        elif event == "return":
+            self.show_pending(frame)
+        return self.trace
+
+    def run(self, argv):
+        code = compile("\n".join(self.src) + "\n", self.path, "exec")
+        g = {"__name__": "__main__", "__file__": self.path, "__builtins__": __builtins__}
+        sys.argv = [self.path] + argv
+        sys.path.insert(0, os.path.dirname(self.path))
+        sys.settrace(self.trace)
+        try:
+            exec(code, g)
+        finally:
+            sys.settrace(None)
+
+
+def main(argv):
+    if not argv or argv[0] in ("-h", "--help"):
+        print(__doc__.strip()); return 2
+    try:
+        Stepper(argv[0]).run(argv[1:])
+    except SystemExit as e:
+        return e.code if isinstance(e.code, int) else (0 if e.code is None else 1)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

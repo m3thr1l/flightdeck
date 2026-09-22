@@ -1,0 +1,227 @@
+#!/usr/bin/env python3
+"""deck-hosts — the host inventory behind flightdeck-net.
+
+Every network tool run inside the deck feeds this store (net.zsh captures
+the stdout pane through tmux pipe-pane and calls `ingest`), and the follower
+pane shows a host's card whenever the cursor is on an address.
+
+    deck-hosts ingest [nmap|arp|auto] [FILE]     parse output (default: auto, stdin)
+    deck-hosts list [QUERY]                      hosts, newest first; QUERY matches addr/name/mac/service
+    deck-hosts show ADDR|NAME|MAC                one host, as text
+    deck-hosts card WORD TTY                     paint the card for WORD on a pane (exit 1: unknown)
+    deck-hosts subnet CIDR TTY                   paint the known hosts in CIDR
+
+Store: $DECK_NET_DIR (default ~/.local/share/deck-net), SQLite, standard
+library only. Parsers: nmap normal and greppable (-oG) output, `arp -a`
+(macOS and Linux). Vendors come from the MAC prefix when the tool printed one.
+"""
+import ipaddress, json, os, re, sqlite3, sys, time
+
+DATA = os.environ.get("DECK_NET_DIR") or os.path.join(
+    os.environ.get("XDG_DATA_HOME") or os.path.expanduser("~/.local/share"), "deck-net")
+DB = os.path.join(DATA, "hosts.db")
+IP = re.compile(r"\b(\d{1,3}(?:\.\d{1,3}){3})\b")
+MAC = re.compile(r"\b([0-9A-Fa-f]{1,2}(?::[0-9A-Fa-f]{1,2}){5})\b")
+ESC = "\x1b"
+
+
+# ------------------------------------------------------------------ store --
+def db():
+    os.makedirs(DATA, mode=0o700, exist_ok=True)
+    c = sqlite3.connect(DB)
+    c.executescript("""
+      create table if not exists hosts(
+        addr text primary key, name text, mac text, vendor text, os text,
+        first_seen real, last_seen real, seen_by text);
+      create table if not exists ports(
+        addr text, port integer, proto text, state text, service text, version text, seen real,
+        primary key(addr, port, proto));
+      create index if not exists ports_addr on ports(addr);""")
+    return c
+
+
+def norm_mac(m):
+    return ":".join(p.zfill(2).lower() for p in m.split(":")) if m else None
+
+
+def upsert(c, addr, name=None, mac=None, vendor=None, os_=None, ports=(), by="?"):
+    now = time.time()
+    row = c.execute("select name, mac, vendor, os, first_seen from hosts where addr=?", (addr,)).fetchone()
+    if row:
+        c.execute("update hosts set name=coalesce(?,name), mac=coalesce(?,mac), vendor=coalesce(?,vendor), "
+                  "os=coalesce(?,os), last_seen=?, seen_by=? where addr=?",
+                  (name, norm_mac(mac), vendor, os_, now, by, addr))
+    else:
+        c.execute("insert into hosts values(?,?,?,?,?,?,?,?)",
+                  (addr, name, norm_mac(mac), vendor, os_, now, now, by))
+    for port, proto, state, service, version in ports:
+        c.execute("insert or replace into ports values(?,?,?,?,?,?,?)",
+                  (addr, int(port), proto, state, service or None, version or None, now))
+
+
+# ---------------------------------------------------------------- parsers --
+def parse_nmap(text):
+    """Normal output: 'Nmap scan report for name (addr)', 'MAC Address: .. (Vendor)',
+    'PORT STATE SERVICE VERSION' lines. Greppable: 'Host: addr (name) Ports: ...'."""
+    hosts = []
+    cur = None
+    for line in text.splitlines():
+        m = re.match(r"Nmap scan report for (\S+)(?: \((\d+\.\d+\.\d+\.\d+)\))?", line)
+        if m:
+            name, addr = (m.group(1), m.group(2)) if m.group(2) else (None, m.group(1))
+            cur = {"addr": addr, "name": name, "ports": []}
+            hosts.append(cur); continue
+        m = re.match(r"Host: (\d+\.\d+\.\d+\.\d+) \(([^)]*)\)\s*(.*)", line)
+        if m:
+            cur = {"addr": m.group(1), "name": m.group(2) or None, "ports": []}
+            hosts.append(cur)
+            pm = re.search(r"Ports: (.*?)(?:\t|$)", m.group(3))
+            if pm:
+                for p in pm.group(1).split(","):
+                    f = p.strip().split("/")
+                    if len(f) >= 7:
+                        cur["ports"].append((f[0], f[2], f[1], f[4], f[6]))
+            continue
+        if not cur:
+            continue
+        m = re.match(r"MAC Address: (\S+)(?: \((.*)\))?", line)
+        if m:
+            cur["mac"], cur["vendor"] = m.group(1), m.group(2); continue
+        m = re.match(r"(\d+)/(tcp|udp|sctp)\s+(\S+)\s+(\S+)?\s*(.*)", line)
+        if m:
+            cur["ports"].append((m.group(1), m.group(2), m.group(3), m.group(4), m.group(5).strip())); continue
+        m = re.match(r"(?:OS details|Running): (.*)", line)
+        if m:
+            cur["os"] = m.group(1)
+    return hosts
+
+
+def parse_arp(text):
+    """`arp -a`: 'name (addr) at mac on ifname ...' (macOS), 'name (addr) at mac [ether] on ifname' (Linux)."""
+    hosts = []
+    for line in text.splitlines():
+        m = re.match(r"(\S+) \((\d+\.\d+\.\d+\.\d+)\) at ([0-9a-fA-F:]+|\(incomplete\))", line)
+        if m and m.group(3) != "(incomplete)":
+            hosts.append({"addr": m.group(2), "name": None if m.group(1) == "?" else m.group(1),
+                          "mac": m.group(3), "ports": []})
+    return hosts
+
+
+def detect(text):
+    if "Nmap scan report" in text or re.search(r"^Host: \d", text, re.M):
+        return "nmap"
+    if re.search(r"^\S+ \(\d+\.\d+\.\d+\.\d+\) at ", text, re.M):
+        return "arp"
+    return None
+
+
+def ingest(kind, text):
+    if kind == "auto":
+        kind = detect(text)
+        if not kind:
+            return 0
+    hosts = {"nmap": parse_nmap, "arp": parse_arp}[kind](text)
+    c = db()
+    for h in hosts:
+        upsert(c, h["addr"], h.get("name"), h.get("mac"), h.get("vendor"), h.get("os"), h["ports"], by=kind)
+    c.commit()
+    return len(hosts)
+
+
+# --------------------------------------------------------------- queries --
+def find(c, word):
+    w = word.strip().rstrip(".,;:")
+    if MAC.fullmatch(w):
+        return c.execute("select * from hosts where mac=?", (norm_mac(w),)).fetchone()
+    if IP.fullmatch(w):
+        return c.execute("select * from hosts where addr=?", (w,)).fetchone()
+    return c.execute("select * from hosts where name=? or name like ? order by last_seen desc",
+                     (w, w + ".%")).fetchone()
+
+
+def age(t):
+    d = time.time() - t
+    return f"{int(d)}s" if d < 60 else f"{int(d/60)}m" if d < 3600 else f"{int(d/3600)}h" if d < 86400 else f"{int(d/86400)}d"
+
+
+def card_lines(c, row):
+    addr, name, mac, vendor, os_, first, last, by = row
+    lines = [f"{addr}  {name or ''}".rstrip()]
+    if mac:
+        lines.append(f"  mac      {mac}" + (f"  ({vendor})" if vendor else ""))
+    if os_:
+        lines.append(f"  os       {os_}")
+    lines.append(f"  seen     {age(last)} ago by {by}, first {age(first)} ago")
+    ports = c.execute("select port, proto, state, service, version from ports where addr=? order by port", (addr,)).fetchall()
+    if ports:
+        lines.append("")
+        lines.append("  PORT       STATE   SERVICE   VERSION")
+        for p, proto, state, svc, ver in ports:
+            lines.append(f"  {p}/{proto:<6} {state:<7} {svc or '':<9} {ver or ''}".rstrip())
+    return lines
+
+
+def paint(tty, title, lines):
+    try:
+        import fcntl, struct, termios
+        with open(tty, "wb", buffering=0) as t:
+            rows, cols = struct.unpack("HHHH", fcntl.ioctl(t, termios.TIOCGWINSZ, b"\0" * 8))[:2]
+            body = [l[:cols - 1] for l in lines[:rows - 1]]
+            frame = f"{ESC}[?7l{ESC}[H{ESC}[2J{ESC}[7m {title:<{cols - 1}.{cols - 1}}{ESC}[0m"
+            frame += "".join("\n" + l for l in body)
+            t.write(frame.encode())
+    except OSError:
+        return 2
+    return 0
+
+
+def main(argv):
+    if not argv or argv[0] in ("-h", "--help"):
+        print(__doc__.strip()); return 2
+    cmd, args = argv[0], argv[1:]
+    if cmd == "ingest":
+        kind = args[0] if args and args[0] in ("nmap", "arp", "auto") else "auto"
+        src = args[1] if len(args) > 1 else (args[0] if args and args[0] not in ("nmap", "arp", "auto") else None)
+        text = open(src, errors="replace").read() if src else sys.stdin.read()
+        n = ingest(kind, text)
+        print(f"deck-hosts: {n} host(s)")
+        return 0
+    c = db()
+    if cmd == "list":
+        q = f"%{args[0]}%" if args else "%"
+        rows = c.execute("""select h.* from hosts h where h.addr like ? or h.name like ? or h.mac like ?
+            or exists(select 1 from ports p where p.addr=h.addr and (p.service like ? or p.version like ?))
+            order by last_seen desc""", (q, q, q, q, q)).fetchall()
+        for addr, name, mac, vendor, os_, first, last, by in rows:
+            n = c.execute("select count(*) from ports where addr=? and state='open'", (addr,)).fetchone()[0]
+            print(f"{addr:<16} {name or '':<24} {mac or '':<18} {n:>3} open  {age(last)} ago")
+        return 0
+    if cmd == "show":
+        row = find(c, args[0]) if args else None
+        if not row:
+            print("deck-hosts: unknown host", file=sys.stderr); return 1
+        print("\n".join(card_lines(c, row))); return 0
+    if cmd == "card":
+        row = find(c, args[0]) if len(args) > 1 else None
+        if not row:
+            return 1
+        return paint(args[1], f"host  {row[0]}", card_lines(c, row))
+    if cmd == "subnet":
+        try:
+            net = ipaddress.ip_network(args[0], strict=False)
+        except (ValueError, IndexError):
+            return 1
+        rows = [r for r in c.execute("select * from hosts order by addr").fetchall()
+                if ipaddress.ip_address(r[0]) in net]
+        if not rows:
+            return 1
+        lines = []
+        for addr, name, mac, vendor, os_, first, last, by in rows:
+            n = c.execute("select count(*) from ports where addr=? and state='open'", (addr,)).fetchone()[0]
+            lines.append(f"{addr:<16} {name or '':<20} {mac or '':<18} {n:>2} open  {age(last)}")
+        return paint(args[1], f"subnet  {net}  ({len(rows)} hosts)", lines)
+    print(__doc__.strip()); return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
