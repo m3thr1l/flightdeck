@@ -26,6 +26,10 @@ cache=$cachedir/${page//\//_}.$cols          # width is part of the key: reflow 
 esc=$'\e' bs=$'\b'
 
 if [[ ! -s $cache.fmt || ! -s $cache.txt ]]; then
+    # A real page file must exist: on hosts with the manuals stripped (Ubuntu
+    # "minimized") man is a stub that prints a notice and exits 0.
+    src=$(command man -w -- "$page" 2>/dev/null) || exit 1
+    [[ -n $src && -f ${src%%$'\n'*} ]] || exit 1
     mkdir -p "$cachedir"
     # MAN_KEEP_FORMATTING: man normally strips bold/underline when stdout is
     # not a terminal. MANWIDTH: wrap to the help pane, not to our own tty.
