@@ -6,11 +6,10 @@
 #   deck mode [NAME]   show or switch what the right-hand pane follows
 #   here CMD    run one command un-split, in the prompt pane (works for functions too)
 #   deck-tty CMD   same, but zoomed to the full window (external programs)
-#   step SCRIPT [ARGS]  run a shell script one command at a time, source on the right
 #   deck ssh HOST  log in to HOST with the remote shell's streams in these panes
 #   deck NAME ...  a plugin's subcommand: any function _deck_cmd_NAME
 #   Alt-Up / Alt-Down   scroll the follower pane;  Alt-h  toggle following
-#   Alt-m       cycle follower modes;   Alt-x   run the current line under step
+#   Alt-m       cycle follower modes
 #   Alt-Enter / Ctrl-]   pick a path with fzf for the word under the cursor
 #
 #   +------------------+---------------+
@@ -28,7 +27,6 @@
 
 : ${DECK_MAN:=${${(%):-%x}:A:h}/deck-man}     # helpers live next to this file
 : ${DECK_TTY:=${${(%):-%x}:A:h}/deck-tty}
-: ${DECK_STEP:=${${(%):-%x}:A:h}/deck-step}
 : ${DECK_SRC:=${${(%):-%x}:A:h}/deck-src}
 # ssh connection sharing. The follower asks remote hosts small questions on
 # keystrokes (is there a man page, what is in that directory); without a
@@ -383,49 +381,6 @@ _deck_path_here() {
 # connection; fails fast (exit 255) when there is none and auth would prompt.
 _deck_ssh() { command ssh $DECK_SSH_OPTS -o BatchMode=yes -o ConnectTimeout=2 -- "$@" }
 
-# --------------------------------------------------------- mode: script ----
-# Shows the source of the shell script named on the command line, and while
-# `step` runs it, the line about to execute (deck-step paints that itself).
-_deck_script_file() {                         # first word on the line that is a readable script
-    local -a w; w=( ${(z)LBUFFER}${RBUFFER%%[[:space:]]*} )
-    local x f
-    for x in $w; do
-        f=${x/#\~/$HOME}
-        [[ -f $f && -r $f ]] || continue
-        [[ $f == *.(sh|bash|zsh) || "$(head -c2 -- $f 2>/dev/null)" == '#!' ]] && { print -r -- $f; return 0 }
-    done
-    return 1
-}
-_deck_mode_script_follow() {
-    emulate -L zsh
-    local f; f=$(_deck_script_file) || return 0
-    [[ $f != $_deck_last ]] || return 0
-    _deck_last=$f _deck_scroll=0
-    $DECK_SRC $DECK_HELP_TTY $f 0 0 2>/dev/null
-}
-_deck_mode_script_repaint() {
-    [[ -n $_deck_last ]] && $DECK_SRC $DECK_HELP_TTY $_deck_last 0 $_deck_scroll 2>/dev/null
-}
-DECK_MODES+=( script )
-
-step() {                                      # step SCRIPT [ARGS...]
-    emulate -L zsh
-    (( $# )) || { print -u2 "usage: step SCRIPT [ARGS...]"; return 2 }
-    local prev=$DECK_MODE rc
-    [[ -n $DECK_HELP_PANE ]] && _deck_mode script
-    DECK_HELP_TTY=$DECK_HELP_TTY DECK_SRC=$DECK_SRC $DECK_STEP "$@"; rc=$?
-    [[ -n $DECK_HELP_PANE ]] && _deck_mode $prev
-    return $rc
-}
-_deck_step_line() {                           # Alt-x: run this command line under step
-    [[ -n ${BUFFER//[[:space:]]/} ]] || return 0
-    [[ $BUFFER == step\ * ]] || BUFFER="step $BUFFER"
-    zle accept-line
-}
-zle -N _deck_step_line
-bindkey '^[x' _deck_step_line                  # Alt-x (replaces execute-named-cmd)
-bindkey $'\xe2\x89\x88' _deck_step_line        # ≈  Option-x
-
 # ---------------------------------------------------------- mode: files ----
 # Directory listing for the path under the cursor, local or HOST:path (over
 # the shared ssh connection), with the first entry matching what has been
@@ -557,7 +512,7 @@ _deck_remote() {                              # deck ssh HOST [SSH-ARGS...]
     fi
 
     # Helpers, plus a ZDOTDIR that runs the user's own startup files and then attaches.
-    tar -C $dir -cf - deck.zsh deck-man deck-src deck-step deck-tty | _deck_ssh $host "
+    tar -C $dir -cf - deck.zsh deck-man deck-src deck-tty | _deck_ssh $host "
         d=$rdir; mkdir -p \$d/zdot && tar -xf - -C \$d && cd \$d/zdot &&
         printf '%s\n' \"ZDOTDIR=\\\$HOME; [[ -r \\\$HOME/.zshenv ]] && source \\\$HOME/.zshenv; ZDOTDIR=\$d/zdot\" >.zshenv &&
         printf '%s\n' \"ZDOTDIR=\\\$HOME; [[ -r \\\$HOME/.zprofile ]] && source \\\$HOME/.zprofile; ZDOTDIR=\$d/zdot\" >.zprofile &&
