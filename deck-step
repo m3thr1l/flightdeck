@@ -1,0 +1,115 @@
+#!/bin/sh
+# deck-step SCRIPT [ARGS...] — run a shell script one command at a time.
+#
+# The script is sourced into a fresh bash or zsh (chosen from its shebang)
+# that has a DEBUG trap installed. Before every command the trap stamps
+#     ── file:line ❯ command
+# on both stdout and stderr (the two panes, when the deck is on) so that each
+# command's output sits under its own header, paints the source around that
+# line on $DECK_HELP_TTY through deck-src, and waits for a key on the
+# terminal:  n / Enter / space  next command,  c  continue without stopping,
+# q  abort the script (exit 130). With the deck off there is no pane to
+# paint; stepping and the trace still work.
+#
+# Verbose: what the script hides is shown. Output it sends to /dev/null goes
+# to the panes instead (a copy of the script is run in which `>/dev/null` and
+# `2>/dev/null` point at the script's real stdout/stderr; same basename, same
+# line numbers, $0 untouched), and after an assignment that captures a
+# command (`x=$(...)`) the value it received is printed under the stamp.
+#
+# Shell scripts (sh, bash, zsh) run here under a DEBUG trap; Python scripts
+# (a python shebang or a .py name) are handed to deck-step-py, which does the
+# same with sys.settrace.
+
+[ $# -gt 0 ] || { echo "usage: deck-step SCRIPT [ARGS...]" >&2; exit 2; }
+script=$1; shift
+[ -r "$script" ] || { echo "deck-step: cannot read $script" >&2; exit 2; }
+case $script in */*) ;; *) script=./$script ;; esac      # `. foo` would search $PATH
+
+DECK_SRC=${DECK_SRC:-$(cd "$(dirname "$0")" && pwd)/deck-src}
+export DECK_SRC
+
+# The copy with /dev/null redirections redirected. The fd numbers are the
+# variables set up by the prelude, expanded by the stepped shell itself.
+DECK_STEP_ORIG=$(cd "$(dirname "$script")" && pwd)/$(basename "$script")
+tmpd=$(mktemp -d "${TMPDIR:-/tmp}/deck-step.XXXXXX") || exit 2
+trap 'rm -rf "$tmpd"' EXIT
+DECK_STEP_COPY=$tmpd/$(basename "$script")
+sed -E -e 's#2>[[:space:]]*/dev/null#2>/dev/fd/$_deck_step_err#g' \
+       -e 's#(^|[^0-9&<])(&>|1>|>)[[:space:]]*/dev/null#\1\2/dev/fd/$_deck_step_out#g' \
+       "$script" >"$DECK_STEP_COPY" || exit 2
+export DECK_STEP_ORIG DECK_STEP_COPY
+shebang=$(head -n1 "$script")
+case "$shebang $script" in
+    *python*|*.py) exec "$(dirname "$0")/deck-step-py" "$script" "$@" ;;
+esac
+case $shebang in
+    '#!'*zsh*)  shell=zsh ;;
+    '#!'*bash*) shell=bash ;;
+    '#!'*/sh*|'#!'*' sh'*|'#!'*env\ sh*|'#!'*ksh*) shell=bash ;;   # bash runs POSIX scripts fine
+    '#!'*) echo "deck-step: only sh/bash/zsh scripts can be stepped (shebang: $shebang)" >&2; exit 2 ;;
+    *) shell=bash ;;
+esac
+
+if [ "$shell" = bash ]; then
+    bash -c '
+set -T                                  # functrace: the DEBUG trap follows into functions
+exec {_deck_step_out}>&1 {_deck_step_err}>&2   # the script'"'"'s own streams: the trap also
+_deck_step_go=0                                # fires inside $(...) and behind 2>/dev/null
+_deck_step_pend= _deck_step_pendcmd=
+_deck_step() {
+    local file=${BASH_SOURCE[1]} line=${BASH_LINENO[0]} cmd=$BASH_COMMAND k
+    [[ -n $file && -r $file ]] || return 0
+    [[ $file == "$DECK_STEP_COPY" ]] && file=$DECK_STEP_ORIG
+    cmd=${cmd//\/dev\/fd\/\$_deck_step_out//dev/null}; cmd=${cmd//\/dev\/fd\/\$_deck_step_err//dev/null}
+    # A capturing assignment  name=$(...)  is pending until a command that is
+    # not part of it runs; then show the value it received.
+    if [[ -n $_deck_step_pend && $_deck_step_pendcmd != *"$cmd"* ]]; then
+        printf "\e[2m   %s = %q\e[0m\n" "$_deck_step_pend" "${!_deck_step_pend}" >&$_deck_step_out
+        _deck_step_pend=
+    fi
+    if [[ $cmd =~ ^((local|export|declare|typeset|readonly)[[:space:]]+(-[a-zA-Z]+[[:space:]]+)*)?([A-Za-z_][A-Za-z0-9_]*)=.*(\$\(|\`) ]]; then
+        _deck_step_pend=${BASH_REMATCH[4]} _deck_step_pendcmd=$cmd
+    fi
+    local stamp; printf -v stamp "\e[2m── %s:%s ❯ %s\e[0m\n" "${file##*/}" "$line" "${cmd%%$'"'"'\n'"'"'*}"
+    printf "%s" "$stamp" >&$_deck_step_out; printf "%s" "$stamp" >&$_deck_step_err
+    [[ -n $DECK_HELP_TTY ]] && "$DECK_SRC" "$DECK_HELP_TTY" "$file" "$line" 0 \
+        "${file##*/}:$line   [n]ext  [c]ontinue  [q]uit" 2>/dev/null
+    (( _deck_step_go )) && return 0
+    while IFS= read -rsn1 k </dev/tty; do
+        case $k in n|""|" ") return 0 ;; c) _deck_step_go=1; return 0 ;; q) exit 130 ;; esac
+    done
+}
+trap _deck_step DEBUG
+. "$DECK_STEP_COPY"' "$DECK_STEP_ORIG" "$@"
+else
+    zsh -c '
+setopt debugbeforecmd
+exec {_deck_step_out}>&1 {_deck_step_err}>&2   # see the bash prelude
+typeset -gi _deck_step_go=0
+typeset -g _deck_step_pend= _deck_step_pendcmd=
+_deck_step() {                          # $1 funcsourcetrace[1] (file:defline)  $2 LINENO  $3 command
+    local file=${1%:*} line=$(( ${1##*:} + $2 )) k cmd=$3
+    [[ -n $1 && -r $file ]] || return 0
+    [[ $file == $DECK_STEP_COPY ]] && file=$DECK_STEP_ORIG
+    cmd=${cmd//\/dev\/fd\/\$_deck_step_out//dev/null}; cmd=${cmd//\/dev\/fd\/\$_deck_step_err//dev/null}
+    if [[ -n $_deck_step_pend && $_deck_step_pendcmd != *"$cmd"* ]]; then
+        print -r -- $'"'"'\e[2m'"'"'"   $_deck_step_pend = ${(q)${(P)_deck_step_pend}}"$'"'"'\e[0m'"'"' >&$_deck_step_out
+        _deck_step_pend=
+    fi
+    if [[ $cmd =~ '"'"'^((local|export|typeset|readonly|integer|float)[[:space:]]+(-[a-zA-Z]+[[:space:]]+)*)?([A-Za-z_][A-Za-z0-9_]*)=.*(\$\(|`)'"'"' ]]; then
+        _deck_step_pend=$match[4] _deck_step_pendcmd=$cmd
+    fi
+    local stamp=$'"'"'\e[2m'"'"'"── ${file:t}:$line ❯ ${cmd%%$'"'"'\n'"'"'*}"$'"'"'\e[0m'"'"'
+    print -r -- $stamp >&$_deck_step_out; print -r -- $stamp >&$_deck_step_err
+    [[ -n $DECK_HELP_TTY ]] && "$DECK_SRC" "$DECK_HELP_TTY" "$file" "$line" 0 \
+        "${file:t}:$line   [n]ext  [c]ontinue  [q]uit" 2>/dev/null
+    (( _deck_step_go )) && return 0
+    while read -sk1 k </dev/tty; do
+        case $k in n|$'"'"'\n'"'"'|" ") return 0 ;; c) _deck_step_go=1; return 0 ;; q) exit 130 ;; esac
+    done
+}
+trap "_deck_step \"\$funcsourcetrace[1]\" \$LINENO \"\$ZSH_DEBUG_CMD\"" DEBUG
+. "$DECK_STEP_COPY"' "$DECK_STEP_ORIG" "$@"
+fi
+exit $?                                 # the EXIT trap removes the copy
