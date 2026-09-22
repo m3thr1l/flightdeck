@@ -26,7 +26,7 @@ add_line() {   # add_line FILE LINE
 }
 
 mkdir -p "$dst"
-install -m 644 "$src/deck.zsh" "$src/deck.tmux.conf" "$dst/"
+install -m 644 "$src/deck.zsh" "$src/deck.bash" "$src/deck.tmux.conf" "$dst/"
 install -m 755 "$src/deck-man" "$src/deck-tty" "$src/deck-src" "$dst/"
 add_line "$rc"              "source $dst/deck.zsh"
 add_line "$HOME/.tmux.conf" "source-file $dst/deck.tmux.conf"
