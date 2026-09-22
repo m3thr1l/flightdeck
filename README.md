@@ -167,8 +167,15 @@ sourcing to opt out.
 `ssh -tt` sessions give the remote side real ptys whose output is this
 window's panes, the helpers are copied to `DECK_REMOTE_DIR` (`~/.config/deck`
 on HOST), and a login zsh there runs your own startup files and then
-`deck attach`, which redirects its streams the way the local shell does. HOST
-needs zsh and man. The first connection may ask for a password; that opens
+`deck attach`, which redirects its streams the way the local shell does. With
+zsh on HOST that is the same code as locally. With only bash, `deck.bash`
+does the split differently, since bash draws its prompt and line editing
+through stderr: a DEBUG trap points fd 1 and 2 at the panes just before each
+command and PROMPT_COMMAND points them back before the prompt, so commands
+are split and the prompt never is. Works with bash 3.2. Without a line editor
+hook the follower shows the man page of each command as it starts. A host
+with neither gets a plain session. `DECK_REMOTE_SHELL=zsh|bash|none`
+overrides the choice. The first connection may ask for a password; that opens
 the shared connection everything else rides on. Pane titles are set through
 OSC 2 escapes since there is no tmux on that side, editors run unzoomed, and
 the remote pty sizes are set once, at login.
