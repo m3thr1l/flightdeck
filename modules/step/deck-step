@@ -54,11 +54,12 @@ esac
 if [ "$shell" = bash ]; then
     bash -c '
 set -T                                  # functrace: the DEBUG trap follows into functions
-exec {_deck_step_out}>&1 {_deck_step_err}>&2   # the script'"'"'s own streams: the trap also
-_deck_step_go=0                                # fires inside $(...) and behind 2>/dev/null
+exec 8>&1 9>&2                                 # the script'"'"'s own streams: the trap also
+_deck_step_out=8 _deck_step_err=9              # fires inside $(...) and behind 2>/dev/null
+_deck_step_go=0                                # (fixed numbers: bash 3.2 has no {var}>&1)
 _deck_step_pend= _deck_step_pendcmd=
 _deck_step() {
-    local file=${BASH_SOURCE[1]} line=${BASH_LINENO[0]} cmd=$BASH_COMMAND k
+    local file=${BASH_SOURCE[1]} line=$(( BASH_LINENO[0] - _deck_step_off )) cmd=$BASH_COMMAND k
     [[ -n $file && -r $file ]] || return 0
     [[ $file == "$DECK_STEP_COPY" ]] && file=$DECK_STEP_ORIG
     cmd=${cmd//\/dev\/fd\/\$_deck_step_out//dev/null}; cmd=${cmd//\/dev\/fd\/\$_deck_step_err//dev/null}
@@ -80,12 +81,16 @@ _deck_step() {
         case $k in n|""|" ") return 0 ;; c) _deck_step_go=1; return 0 ;; q) exit 130 ;; esac
     done
 }
-trap _deck_step DEBUG
+# bash 3.2 forgets a DEBUG trap that calls a function after its first run;
+# a trap string that (re)defines the function and then calls it keeps firing.
+# The line numbers seen from inside the trap count the trap string'"'"'s own lines.
+_deck_step_off=$(( $(declare -f _deck_step | wc -l) - 1 ))
+trap "$(declare -f _deck_step); _deck_step" DEBUG
 . "$DECK_STEP_COPY"' "$DECK_STEP_ORIG" "$@"
 else
     zsh -c '
 setopt debugbeforecmd
-exec {_deck_step_out}>&1 {_deck_step_err}>&2   # see the bash prelude
+exec 8>&1 9>&2; typeset -gi _deck_step_out=8 _deck_step_err=9   # see the bash prelude
 typeset -gi _deck_step_go=0
 typeset -g _deck_step_pend= _deck_step_pendcmd=
 _deck_step() {                          # $1 funcsourcetrace[1] (file:defline)  $2 LINENO  $3 command

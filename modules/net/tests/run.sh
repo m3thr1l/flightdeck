@@ -18,7 +18,7 @@ harness_start "$PWD" "$PWD/net.zsh"
 t "deck mode net"; M=$(pane net)
 keys "ssh 10.0.0.40"; wait_for "$M" 'printer' 6
 check "card for the address under the cursor" "$(T capture-pane -p -t "$M" | head -3 | tr '\n' '|')" 'host  10\.0\.0\.40\|10\.0\.0\.40  printer\.lan\|.*mac'
-keys " -p"; wait_for "$M" '^ ssh ' 6
+keys " -p"; wait_for "$M" '^ ssh  -p' 6
 check "man page when the cursor is on an option" "$(T capture-pane -p -t "$M" | head -1)" '^ ssh  -p'
 keys " 10.0.0.0/24"; wait_for "$M" 'subnet' 6
 check "subnet view" "$(T capture-pane -p -t "$M" | head -1)" 'subnet  10\.0\.0\.0/24  \(3 hosts\)'
