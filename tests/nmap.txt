@@ -1,0 +1,19 @@
+Starting Nmap 7.95 ( https://nmap.org ) at 2026-09-22 09:00 PDT
+Nmap scan report for router.lan (10.0.0.1)
+Host is up (0.0021s latency).
+Not shown: 997 closed tcp ports (conn-refused)
+PORT    STATE SERVICE VERSION
+22/tcp  open  ssh     OpenSSH 8.9 (protocol 2.0)
+53/tcp  open  domain  dnsmasq 2.89
+80/tcp  open  http    lighttpd 1.4.69
+MAC Address: 00:11:22:33:44:55 (Ubiquiti Networks)
+Service Info: OS: Linux
+
+Nmap scan report for 10.0.0.23
+Host is up (0.010s latency).
+PORT     STATE SERVICE VERSION
+445/tcp  open  microsoft-ds
+3389/tcp open  ms-wbt-server Microsoft Terminal Services
+Running: Microsoft Windows 10
+
+Nmap done: 2 IP addresses (2 hosts up) scanned in 12.31 seconds
