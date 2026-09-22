@@ -15,7 +15,7 @@ This plugin recreates them by watching the stream:
 +------------------------+------------------+
 ```
 
-`net HOST` runs `ssh HOST` under a pty. The prompt and the line you type stay
+`deck net HOST` runs `ssh HOST` under a pty. The prompt and the line you type stay
 in the prompt pane; command output goes to the stdout pane; lines the device
 flags as errors (`% ...`, the `^` marker line) go to the stderr pane; the
 answer to `?` goes to the follower pane. Each command is stamped into the
@@ -42,22 +42,22 @@ From the flightdeck checkout:
 
 | Command            | Effect |
 |--------------------|--------|
-| `net HOST [args]`  | ssh to a device with the split above; follower in `cisco` mode |
+| `deck net HOST [args]` | ssh to a device with the split above; follower in `cisco` mode |
 | `deck mode cisco`  | the follower mode on its own |
 | `?` in a session   | the device's help lands in the follower pane, not in the stream |
 
 Devices are never multiplexed: most allow one session per user and no extra
-channels, and a lingering shared connection would lock you out. `net` runs
+channels, and a lingering shared connection would lock you out. `deck net` runs
 plain `ssh` regardless of the deck's `DECK_SSH_OPTS`.
 
 ## Try it without a switch
 
 ```sh
 deck
-net --exec tests/fake-ios
+deck net --exec tests/fake-ios
 ```
 
-Then `show version`, `show ip ?`, `enable`, `conf t`, `interface Gi0/1`,
+Needs flightdeck with `deck NAME` subcommand dispatch. Then `show version`, `show ip ?`, `enable`, `conf t`, `interface Gi0/1`,
 `no such command`, `end`, `exit`.
 
 ## How it works
