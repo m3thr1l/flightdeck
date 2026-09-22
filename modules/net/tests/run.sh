@@ -7,7 +7,7 @@ echo "ok   syntax"
 export DECK_NET_DIR=$(mktemp -d)
 trap 'rm -rf "$DECK_NET_DIR"' EXIT
 ./deck-hosts ingest nmap tests/nmap.txt >/dev/null && ./deck-hosts ingest tests/arp.txt >/dev/null
-. "${FLIGHTDECK:-$(cd ../flightdeck && pwd)}/tests/harness.sh"
+. "${FLIGHTDECK:-$(cd ../.. && pwd)}/tests/harness.sh"
 check "list" "$(./deck-hosts list | tr '\n' '|')" '10\.0\.0\.40.*printer\.lan.*\|.*10\.0\.0\.1 .*router\.lan.*3 open'
 check "show by name" "$(./deck-hosts show router.lan | tr '\n' '|')" 'Ubiquiti.*22/tcp.*ssh.*OpenSSH'
 check "show by mac" "$(./deck-hosts show aa:bb:cc:dd:ee:ff | head -1)" '^10\.0\.0\.23'

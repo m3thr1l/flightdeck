@@ -1,6 +1,6 @@
 # flightdeck-net
 
-[flightdeck](../flightdeck) for network tools: nmap, arp, tcpdump and
+[flightdeck](../..) for network tools: nmap, arp, tcpdump and
 friends. The idea is that the thing under your cursor is a host, the way
 the man follower treats it as a command and the files mode as a path.
 
@@ -40,13 +40,11 @@ flightdeck with `deck NAME` subcommand dispatch, zsh, tmux, Python 3.8+
 
 ## Install
 
+From the flightdeck checkout:
+
 ```sh
-./install.sh
+./install.sh --modules net
 ```
-
-## Try it without a network
-
-```sh
 deck hosts ingest tests/nmap.txt
 deck hosts ingest tests/arp.txt
 deck hosts list
