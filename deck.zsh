@@ -334,8 +334,8 @@ _deck_mode_man_follow() {
 
     local key="$cmd $sub" page
     if (( ! ${+_deck_pages[$key]} )); then
-        if   [[ -n $sub && $sub =~ '^[A-Za-z0-9_.+-]+$' ]] && man -w -- $cmd-$sub &>/dev/null; then page=$cmd-$sub
-        elif man -w -- $cmd &>/dev/null; then page=$cmd
+        if   [[ -n $sub && $sub =~ '^[A-Za-z0-9_.+-]+$' ]] && _deck_man_has $cmd-$sub; then page=$cmd-$sub
+        elif _deck_man_has $cmd; then page=$cmd
         else page=''; fi
         _deck_pages[$key]=$page
     fi
@@ -363,6 +363,13 @@ _deck_mode_man_repaint() {
     [[ $_deck_last == F:* ]] && { _deck_mode_files_repaint; return }
     local -a f; f=( ${(s:|:)${_deck_last#M:}} )
     [[ -n $f[1] ]] && $DECK_MAN $DECK_HELP_TTY $f[1] $_deck_scroll ${=f[2]} 2>/dev/null
+}
+# Is there a real man page for NAME? `man -w` must name an existing file: on
+# hosts with the manual pages stripped (Ubuntu "minimized"), man is a stub
+# that prints a notice and exits 0, and the follower must not render that.
+_deck_man_has() {
+    local f; f=$(command man -w -- "$1" 2>/dev/null) || return 1
+    [[ -n $f && -f ${f%%$'\n'*} ]]
 }
 # Is the word under the cursor a path?  A word that is an argument (not the
 # command) and has a /, starts with ~ or HOST:, or is the start of a name in
