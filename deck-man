@@ -25,11 +25,13 @@ cachedir=${XDG_CACHE_HOME:-$HOME/.cache}/deck
 cache=$cachedir/${page//\//_}.$cols          # width is part of the key: reflow differs
 esc=$'\e' bs=$'\b'
 
+# A real page file must exist: on hosts with the manuals stripped (Ubuntu
+# "minimized") man is a stub that prints a notice and exits 0. Checked before
+# the cache, so a notice cached by an older version is never painted either.
+src=$(command man -w -- "$page" 2>/dev/null) || exit 1
+[[ -n $src && -f ${src%%$'\n'*} ]] || exit 1
+
 if [[ ! -s $cache.fmt || ! -s $cache.txt ]]; then
-    # A real page file must exist: on hosts with the manuals stripped (Ubuntu
-    # "minimized") man is a stub that prints a notice and exits 0.
-    src=$(command man -w -- "$page" 2>/dev/null) || exit 1
-    [[ -n $src && -f ${src%%$'\n'*} ]] || exit 1
     mkdir -p "$cachedir"
     # MAN_KEEP_FORMATTING: man normally strips bold/underline when stdout is
     # not a terminal. MANWIDTH: wrap to the help pane, not to our own tty.
