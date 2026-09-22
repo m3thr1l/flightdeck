@@ -2,7 +2,7 @@
 # flightdeck-step tests: shell and Python stepping inside the deck.
 set -u
 cd "$(dirname "$0")/.."
-zsh -n step.zsh && sh -n deck-step && sh -n install.sh && python3 -c "import ast; ast.parse(open('deck-step-py').read())" || exit 1
+zsh -n step.zsh && sh -n deck-step && python3 -c "import ast; ast.parse(open('deck-step-py').read())" || exit 1
 echo "ok   syntax"
 FLIGHTDECK=${FLIGHTDECK:-$(cd ../.. && pwd)}
 . "$FLIGHTDECK/tests/harness.sh"

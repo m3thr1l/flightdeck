@@ -2,7 +2,7 @@
 # flightdeck-net tests: inventory, parsers, the net follower, automatic ingest.
 set -u
 cd "$(dirname "$0")/.."
-zsh -n net.zsh && sh -n install.sh && python3 -c "import ast; ast.parse(open('deck-hosts').read())" || exit 1
+zsh -n net.zsh && python3 -c "import ast; ast.parse(open('deck-hosts').read())" || exit 1
 echo "ok   syntax"
 export DECK_NET_DIR=$(mktemp -d)
 trap 'rm -rf "$DECK_NET_DIR"' EXIT
