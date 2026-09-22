@@ -1,4 +1,4 @@
-# mystory
+# deck history
 
 Shell history you can search, sort and trust: every command is recorded with
 its start and end time, exit status, working directory and — when run inside
@@ -7,10 +7,10 @@ Records are hash-chained so that edits and deletions are detectable, and the
 last *N* (you choose) are kept for review, rerunning, examination and audit.
 
 ```
-mystory                   the most recent records
-mystory nmcli             every time nmcli was run
-mystory 10.0.0.5          every command that mentioned that address
-mystory -o HomeNet        ...or whose output did
+deck history                   the most recent records
+deck history nmcli             every time nmcli was run
+deck history 10.0.0.5          every command that mentioned that address
+deck history -o HomeNet        ...or whose output did
 ```
 
 ## Requirements
@@ -20,13 +20,11 @@ output capture. On Arch Linux: `sudo pacman -S --needed python tmux fzf`.
 
 ## Install
 
-```sh
-./install.sh
-```
+From the flightdeck checkout:
 
-Copies two files to `~/.config/mystory` and adds one `source` line to
-`~/.zshrc`, after flightdeck's. Open a new zsh inside tmux, run `deck`, run a
-few commands, then run `mystory`.
+```sh
+./install.sh --modules history
+```
 
 ## Searching
 
@@ -45,7 +43,7 @@ statement of what happened, in order.
 
 | Flag | Meaning |
 |------|---------|
-| `-n 200` | how many records to show (default: `mystory config list`) |
+| `-n 200` | how many records to show (default: `deck history config list`) |
 | `-o`, `--output` | also search stdout and stderr |
 | `-w`, `--word` | whole-word matching |
 | `--failed` | non-zero exit status only |
@@ -56,11 +54,11 @@ statement of what happened, in order.
 | `--plain` | print the list instead of opening the review window |
 
 When stdout is a pipe or a file the list is printed as plain text
-automatically, so `mystory nmcli | wc -l` works.
+automatically, so `deck history nmcli | wc -l` works.
 
 ## The review window
 
-In tmux, `mystory` opens a separate window laid out like the deck: the list at
+In tmux, `deck history` opens a separate window laid out like the deck: the list at
 the top left, the selected record's stdout and stderr below it, and its
 details — including whether it passes verification — on the right. Moving
 through the list repaints the other three panes. Scroll them with the mouse.
@@ -79,12 +77,12 @@ Typing narrows the list (exact substring match, order preserved).
 ## Other commands
 
 ```
-mystory show N [--raw]     one record in full (--raw replays original colours)
-mystory diff N [M]         diff N against M, or against the previous run of the same command
-mystory pin N | unpin N
-mystory redact N [--cmd]   destroy N's stored output (and, with --cmd, its command line)
-mystory verify             check every record and the chain; exit status 1 on any problem
-mystory config [KEY NUM]   keep (records retained), list (default list length),
+deck history show N [--raw]     one record in full (--raw replays original colours)
+deck history diff N [M]         diff N against M, or against the previous run of the same command
+deck history pin N | unpin N
+deck history redact N [--cmd]   destroy N's stored output (and, with --cmd, its command line)
+deck history verify             check every record and the chain; exit status 1 on any problem
+deck history config [KEY NUM]   keep (records retained), list (default list length),
                            cap_mb (per-stream size cap), paint_kb (review replay limit)
 ```
 
@@ -102,14 +100,14 @@ MYSTORY_NOOUTPUT=( 'mystory' 'mystory *' 'gpg *' )
 ```
 
 Keyboard input is never recorded. The data directory,
-`~/.local/share/mystory`, is created mode 0700.
+`~/.local/share/deck/history` (or an existing `~/.local/share/mystory`), is created mode 0700.
 
 ## How it works
 
 ### Capture
 
 flightdeck points the shell's stdout and stderr at two tmux panes. tmux's
-`pipe-pane` hands a copy of every byte a pane receives to a command; mystory's
+`pipe-pane` hands a copy of every byte a pane receives to a command; the module's
 is `cat >> logfile`. The programs you run cannot tell: they are still writing
 to a real terminal, so colours and buffering are unchanged.
 

@@ -143,6 +143,7 @@ Everything that rides on the mode and subcommand hooks lives under
 | [step](modules/step) | `deck step SCRIPT`: run a shell or Python script one line at a time, source on the right, hidden output surfaced |
 | [cisco](modules/cisco) | `deck net HOST`: the stream split for switches and routers, `?` help in the follower |
 | [net](modules/net) | `deck mode net` and `deck hosts`: a host inventory fed by nmap and arp, the card of the host under the cursor |
+| [history](modules/history) | `deck history`: every command recorded with its stdout and stderr, searchable, hash-chained |
 
 `./install.sh --modules step,net` or `--all`; `--list` describes them. A
 module is a zsh file that defines `_deck_mode_NAME_*` and `_deck_cmd_NAME`
