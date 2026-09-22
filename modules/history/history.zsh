@@ -1,4 +1,4 @@
-# mystory.zsh — recording hooks. Source from ~/.zshrc AFTER flightdeck's deck.zsh.
+# history.zsh — `deck history`: recording hooks. Sourced after deck.zsh (the installer does).
 #
 # The hooks do no real work: they append one line of text per command start and
 # end to $MYSTORY_DIR/events, and write an invisible marker into flightdeck's
@@ -13,8 +13,12 @@
 # With the deck off, commands are still recorded, without output.
 
 zmodload zsh/datetime
-: ${MYSTORY_DIR:=${XDG_DATA_HOME:-$HOME/.local/share}/mystory}
-: ${MYSTORY_BIN:=${${(%):-%x}:A:h}/mystory}
+# The store: ~/.local/share/deck/history, or an older mystory store if there is one.
+if [[ -z $MYSTORY_DIR ]]; then
+    MYSTORY_DIR=${XDG_DATA_HOME:-$HOME/.local/share}/deck/history
+    [[ -d $MYSTORY_DIR || ! -d ${XDG_DATA_HOME:-$HOME/.local/share}/mystory ]] || MYSTORY_DIR=${XDG_DATA_HOME:-$HOME/.local/share}/mystory
+fi
+: ${MYSTORY_BIN:=${${(%):-%x}:A:h}/deck-history}
 export MYSTORY_DIR
 typeset -ga MYSTORY_IGNORE MYSTORY_NOOUTPUT
 (( $#MYSTORY_NOOUTPUT )) || MYSTORY_NOOUTPUT=( 'mystory' 'mystory *' )
@@ -28,7 +32,7 @@ typeset -g _mystory_out_tty= _mystory_err_tty=
 # it to a file. The program writing to the pane cannot tell.
 _mystory_attach() {
     emulate -L zsh
-    if [[ -z $DECK_OUT_PANE ]]; then
+    if [[ -z $DECK_OUT_PANE || -z $TMUX ]]; then       # deck off, or a remote deck (no tmux there)
         _mystory_piped= _mystory_out_log= _mystory_err_log=
         return
     fi
@@ -111,4 +115,4 @@ add-zsh-hook preexec _mystory_preexec
 # marker precedes its "── exit N" line.
 precmd_functions=( _mystory_precmd ${precmd_functions:#_mystory_precmd} )
 
-mystory() { command $MYSTORY_BIN "$@" }
+_deck_cmd_history() { command $MYSTORY_BIN "$@" }      # deck history ...

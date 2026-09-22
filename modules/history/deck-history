@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
-"""mystory — command history with captured output, for review, rerun and audit.
+"""deck history — command history with captured output, for review, rerun and audit.
 
 Data flow
 ---------
-  zsh hooks (mystory.zsh)            tmux pipe-pane
+  zsh hooks (history.zsh)            tmux pipe-pane
     append S/E events  ─┐              raw bytes of the stdout / stderr panes,
     write invisible     │              including the markers, appended to
     markers into panes ─┼─────────▶    live/<shellpid>-<pane>.out / .err
                         ▼
-                 `mystory ingest`  cuts the logs at the markers, stores each
+                 `deck-history ingest`  cuts the logs at the markers, stores each
                  record (SQLite row + files), chains its hash, prunes.
 
 Nothing here runs on the command's critical path: the hooks only append text.
@@ -19,10 +19,12 @@ from datetime import datetime, timedelta
 
 US, RS = "\x1f", "\x1e"
 MARK = re.compile(rb"\x1b\]7777;mystory;([SE]);([0-9]+-[0-9]+)\x07")
-DATA = os.environ.get("MYSTORY_DIR") or os.path.join(
-    os.environ.get("XDG_DATA_HOME") or os.path.expanduser("~/.local/share"), "mystory")
+_share = os.environ.get("XDG_DATA_HOME") or os.path.expanduser("~/.local/share")
+DATA = os.environ.get("MYSTORY_DIR") or os.path.join(_share, "deck", "history")
+if not os.environ.get("MYSTORY_DIR") and not os.path.isdir(DATA) and os.path.isdir(os.path.join(_share, "mystory")):
+    DATA = os.path.join(_share, "mystory")                       # an older mystory store
 CONF = os.path.join(os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config"),
-                    "mystory", "config")
+                    "deck", "history.conf")
 DEFAULTS = {"keep": 5000, "list": 50, "cap_mb": 5, "paint_kb": 256}
 SELF = os.path.realpath(__file__)
 GRACE = 2.0            # seconds to wait for tmux to flush a marker before giving up
@@ -45,7 +47,7 @@ def cmd_config(a):
     c = config()
     if a.key:
         if a.key not in DEFAULTS or a.value is None or a.value < 0:
-            sys.exit(f"usage: mystory config [{'|'.join(DEFAULTS)} NUMBER]")
+            sys.exit(f"usage: deck history config [{'|'.join(DEFAULTS)} NUMBER]")
         c[a.key] = a.value
         os.makedirs(os.path.dirname(CONF), exist_ok=True)
         with open(CONF, "w") as f:
@@ -375,7 +377,7 @@ def parse_since(s):
             return datetime.strptime(s, f).timestamp()
         except ValueError:
             pass
-    sys.exit(f"mystory: can't parse --since {s!r} (try: today, yesterday, 90m, 6h, 3d, 2026-09-17)")
+    sys.exit(f"deck history: can't parse --since {s!r} (try: today, yesterday, 90m, 6h, 3d, 2026-09-17)")
 
 
 def read_txt(seq, name):
@@ -461,7 +463,7 @@ def cmd_rows(a):                                   # internal: feed for fzf (and
 def get(con, seq):
     r = con.execute("SELECT * FROM records WHERE seq=?", (seq,)).fetchone()
     if not r:
-        sys.exit(f"mystory: no record {seq}")
+        sys.exit(f"deck history: no record {seq}")
     return r
 
 
@@ -641,7 +643,7 @@ def launch_review(a):
     a.cwd = a.cwd or os.getcwd()
     origin = os.environ.get("TMUX_PANE", "")
     argv = [sys.executable, SELF, "_review", "--origin", origin] + filter_args(a)
-    tmux("new-window", "-n", "mystory", shlex.join(argv))
+    tmux("new-window", "-n", "history", shlex.join(argv))
 
 
 def cmd_review(a):
@@ -651,7 +653,7 @@ def cmd_review(a):
     meta = tmux("split-window", "-h", "-d", "-l", "38%", "-t", me, "-P", "-F", fmt, hold).split()
     out = tmux("split-window", "-v", "-d", "-l", "70%", "-t", me, "-P", "-F", fmt, hold).split()
     err = tmux("split-window", "-v", "-d", "-l", "30%", "-t", out[0], "-P", "-F", fmt, hold).split()
-    for p, title in ((out, "stdout (recorded)"), (err, "stderr (recorded)"), (meta, "record"), ([me], "mystory")):
+    for p, title in ((out, "stdout (recorded)"), (err, "stderr (recorded)"), (meta, "record"), ([me], "history")):
         tmux("select-pane", "-t", p[0], "-T", title)
         if p[0] != me:
             tmux("select-pane", "-t", p[0], "-d")
@@ -676,7 +678,7 @@ def cmd_review(a):
     header = ("enter: to prompt   ^R: rerun   ^D: diff vs previous run   ^P: pin\n"
               "^Y: copy stdout    ^O/^E: open stdout/stderr in less   esc: quit")
     cmd = ["fzf", "--ansi", "--exact", "--no-sort", "--layout=reverse", "--delimiter=\t",
-           "--tabstop=2", "--no-multi", "--header", header, "--prompt", "mystory> "]
+           "--tabstop=2", "--no-multi", "--header", header, "--prompt", "history> "]
     for b in binds:
         cmd += ["--bind", b]
     feed = subprocess.run([sys.executable, SELF, "_rows"] + filter_args(a), capture_output=True)
