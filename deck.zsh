@@ -381,7 +381,10 @@ _deck_path_here() {
 
 # _deck_ssh HOST CMD...   a quiet, non-interactive question over the shared
 # connection; fails fast (exit 255) when there is none and auth would prompt.
-_deck_ssh() { command ssh $DECK_SSH_OPTS -o BatchMode=yes -o ConnectTimeout=2 -- "$@" }
+# $_deck_ssh_extra: what `deck ssh HOST ARGS...` was given (-l user, -p port...);
+# every connection to HOST needs the same, or it is a different connection.
+typeset -ga _deck_ssh_extra
+_deck_ssh() { command ssh $DECK_SSH_OPTS $_deck_ssh_extra -o BatchMode=yes -o ConnectTimeout=2 -- "$@" }
 
 # --------------------------------------------------------- mode: script ----
 # Shows the source of the shell script named on the command line, and while
@@ -537,6 +540,7 @@ _deck_remote() {                              # deck ssh HOST [SSH-ARGS...]
     [[ -n $1 ]] || { print -u2 "usage: deck ssh HOST [SSH-ARGS...]"; return 2 }
     local host=$1; shift
     local dir=${DECK_MAN:h} id=$$.$RANDOM rdir=$DECK_REMOTE_DIR
+    local -a _deck_ssh_extra; _deck_ssh_extra=( "$@" )    # seen by _deck_ssh (dynamic scope)
 
     # Shared connection first: this is the one place that may ask for a password.
     if ! command ssh $DECK_SSH_OPTS "$@" -O check $host 2>/dev/null; then
@@ -568,7 +572,7 @@ _deck_remote() {                              # deck ssh HOST [SSH-ARGS...]
     local -a pids; local s tty
     for s in out err help; do
         case $s in (out) tty=$DECK_OUT_TTY ;; (err) tty=$DECK_ERR_TTY ;; (help) tty=$DECK_HELP_TTY ;; esac
-        command ssh $DECK_SSH_OPTS -tt $host "stty -echo; tty >$rdir/tty.$id.$s; exec tail -f /dev/null" \
+        command ssh $DECK_SSH_OPTS "$@" -tt $host "stty -echo; tty >$rdir/tty.$id.$s; exec tail -f /dev/null" \
             </dev/null >$tty 2>/dev/null &!
         pids+=( $! )
     done
