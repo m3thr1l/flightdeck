@@ -437,7 +437,11 @@ _deck_mode_files_follow() {
     _deck_mode_files_repaint
 }
 _deck_mode_files_repaint() {
-    local f; f=$(_deck_files_list "$_deck_files_host" "$_deck_files_dir") || return 0
+    local f; f=$(_deck_files_list "$_deck_files_host" "$_deck_files_dir") || {
+        # A remote listing needs the shared connection: say so instead of showing nothing.
+        [[ -n $_deck_files_host ]] && printf '\e[?7l\e[H\e[2J\e[7m %s\e[0m\n\e[2mno shared connection to %s: run  ssh %s  once (it stays open 10 minutes), then keep typing.\e[0m' \
+            "$_deck_files_host:$_deck_files_dir" "$_deck_files_host" "$_deck_files_host" >$DECK_HELP_TTY
+        return 0 }
     local -i n=0 line=0
     if [[ -n $_deck_files_prefix ]]; then
         n=$(grep -c -- "^${_deck_files_prefix}" $f 2>/dev/null)
