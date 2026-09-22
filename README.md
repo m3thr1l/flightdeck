@@ -47,12 +47,10 @@ tmux and run `deck`.
 | `deck mode [NAME]`   | Show or switch what the right-hand pane follows (see below) |
 | `here CMD`           | Run one command un-split in the prompt pane (works for functions and builtins) |
 | `deck-tty CMD`       | Run one external program un-split *and* zoomed to the full window |
-| `step SCRIPT [ARGS]` | Run a shell script one command at a time, its source on the right |
 | `deck ssh HOST`      | Log in to HOST with the remote shell's streams in these panes |
 | Alt-Up / Alt-Down    | Scroll the follower pane |
 | Alt-h                | Toggle following |
 | Alt-m                | Cycle follower modes |
-| Alt-x                | Run the current command line under `step` |
 | Alt-Enter, Ctrl-]    | Pick a path with fzf for the word under the cursor, in any mode |
 
 On a Mac, Alt is the Option key. Option-h and Option-m work as-is (the
@@ -134,16 +132,16 @@ then `DECK_MODES+=( NAME )`; `deck mode NAME` and Alt-m pick it up.
 Plugins add subcommands the same way: a function `_deck_cmd_NAME` is run by
 `deck NAME ...`, so nothing on `$PATH` gets shadowed.
 
-### Modes: `script` and `files`
+### Plugins
 
-`deck mode script` shows the source of the script named on the command line.
-`step ./build.sh args` (or Alt-x on a typed command line) runs a sh, bash or
-zsh script under a `DEBUG` trap in a fresh shell: before each command the
-trap prints `+ file:line: command` on stderr, paints the source around that
-line in the right-hand pane with a marker, and waits for a key: `n`, Enter or
-space for the next command, `c` to run on without stopping, `q` to abort
-(exit 130). Line numbers inside functions are absolute in both shells. The
-mode is switched to `script` for the run and back afterwards.
+Two things ride on the mode and subcommand hooks and live in their own
+repositories: [flightdeck-step](../flightdeck-step) (`deck step SCRIPT`, run a
+shell or Python script one line at a time with its source on the right) and
+[flightdeck-cisco](../flightdeck-cisco) (`deck net HOST`, the stream split for
+network devices). `deck-src`, the painter that puts a file with a marked line
+on the follower pane, stays here because `files` mode uses it too.
+
+### Mode: `files`
 
 The man follower is path-aware: when the cursor is on an argument that looks
 like a path (has a `/`, starts with `~` or `host:`, or is the start of a name
