@@ -508,15 +508,21 @@ _deck_remote() {                              # deck ssh HOST [SSH-ARGS...]
         done
         (( i < 30 )) || { print -u2 "deck ssh: no shared connection to $host (ssh -fN exited $rc; check: $err)"; return 1 }
     fi
-    local out
-    if ! out=$(_deck_ssh $host 'command -v zsh' 2>&1); then
-        if [[ $out == *zsh* || -z $out ]]; then print -u2 "deck ssh: $host has no zsh"
-        else print -u2 "deck ssh: cannot use the shared connection to $host: $out"; fi
-        return 1
+    # Which shell runs the far side: zsh if there is one, else bash (see
+    # deck.bash), else a plain session. DECK_REMOTE_SHELL=bash|zsh|none overrides.
+    local out rshell
+    if ! out=$(_deck_ssh $host 'command -v zsh || command -v bash || echo none' 2>&1); then
+        print -u2 "deck ssh: cannot use the shared connection to $host: $out"; return 1
+    fi
+    rshell=${DECK_REMOTE_SHELL:-${${out:t}:-none}}
+    if [[ $rshell == none ]]; then
+        print -u2 "deck ssh: $host has neither zsh nor bash: plain session, no split"
+        command ssh $DECK_SSH_OPTS "$@" -t $host >&$DECK_SAVE_OUT 2>&$DECK_SAVE_ERR
+        return
     fi
 
     # Helpers, plus a ZDOTDIR that runs the user's own startup files and then attaches.
-    tar -C $dir -cf - deck.zsh deck-man deck-src deck-tty | _deck_ssh $host "
+    tar -C $dir -cf - deck.zsh deck.bash deck-man deck-src deck-step deck-tty | _deck_ssh $host "
         d=$rdir; mkdir -p \$d/zdot && tar -xf - -C \$d && cd \$d/zdot &&
         printf '%s\n' \"ZDOTDIR=\\\$HOME; [[ -r \\\$HOME/.zshenv ]] && source \\\$HOME/.zshenv; ZDOTDIR=\$d/zdot\" >.zshenv &&
         printf '%s\n' \"ZDOTDIR=\\\$HOME; [[ -r \\\$HOME/.zprofile ]] && source \\\$HOME/.zprofile; ZDOTDIR=\$d/zdot\" >.zprofile &&
@@ -549,8 +555,9 @@ _deck_remote() {                              # deck ssh HOST [SSH-ARGS...]
     # The session itself: one terminal (the prompt pane), no zoom. The saved
     # fds, not a fresh open of /dev/tty: with ssh's stdout on a newly opened
     # /dev/tty the remote shell is hung up within a second (macOS, observed).
-    command ssh $DECK_SSH_OPTS "$@" -t $host "env ZDOTDIR=$rdir/zdot DECK_REMOTE_DIR=$rdir DECK_REMOTE=$id zsh -il" \
-        >&$DECK_SAVE_OUT 2>&$DECK_SAVE_ERR
+    local rcmd="env ZDOTDIR=$rdir/zdot DECK_REMOTE_DIR=$rdir DECK_REMOTE=$id zsh -il"
+    [[ $rshell == bash ]] && rcmd="env DECK_REMOTE_DIR=$rdir DECK_REMOTE=$id bash --rcfile $rdir/deck.bash -i"
+    command ssh $DECK_SSH_OPTS "$@" -t $host "$rcmd" >&$DECK_SAVE_OUT 2>&$DECK_SAVE_ERR
     local rc=$?
     kill $pids 2>/dev/null
     _deck_ssh $host "rm -f $rdir/tty.$id.*" 2>/dev/null
