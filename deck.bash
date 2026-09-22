@@ -31,6 +31,12 @@ else
         command -v "$_c" >/dev/null 2>&1 && eval "$_c() { command '$_deck_dir/deck-tty' $_c \"\$@\"; }"
     done
     _deck_stamped= _deck_last=
+    # Is there a manual on this host at all? Decided once: with none (Ubuntu
+    # "minimized" leaves a stub man that prints a notice) the follower is left alone.
+    _deck_man_ok=
+    _deck_f=$(command man -w man 2>/dev/null); _deck_f=${_deck_f%%$'\n'*}
+    [ -n "$_deck_f" ] && [ -f "$_deck_f" ] && _deck_man_ok=1
+    unset _deck_f
     _deck_debug() {
         case $BASH_COMMAND in _deck_precmd*) return ;; esac
         exec >"$DECK_OUT_TTY" 2>"$DECK_ERR_TTY"
@@ -42,7 +48,7 @@ else
         printf '\033]2;stdin ▸ %s\007' "${c:0:32}" >&8
         w=${c%% *}; w=${w##*/}
         case $w in sudo|command|time|nice|nohup|env) w=${c#* }; w=${w%% *}; w=${w##*/} ;; esac
-        if [ "$w" != "$_deck_last" ]; then
+        if [ -n "$_deck_man_ok" ] && [ "$w" != "$_deck_last" ]; then
             _deck_last=$w
             "$_deck_dir/deck-man" "$DECK_HELP_TTY" "$w" 0 >/dev/null 2>&1
         fi
