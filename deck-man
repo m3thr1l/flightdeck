@@ -29,9 +29,11 @@ esc=$'\e' bs=$'\b'
 # "minimized") man is a stub that prints a notice and exits 0. Checked before
 # the cache, so a notice cached by an older version is never painted either.
 src=$(command man -w -- "$page" 2>/dev/null) || exit 1
-[[ -n $src && -f ${src%%$'\n'*} ]] || exit 1
+src=${src%%$'\n'*}
+[[ -n $src && -f $src ]] || exit 1
 
-if [[ ! -s $cache.fmt || ! -s $cache.txt ]]; then
+# Render once per page and width; again if the page file is newer than the cache.
+if [[ ! -s $cache.fmt || ! -s $cache.txt || $src -nt $cache.fmt ]]; then
     mkdir -p "$cachedir"
     # MAN_KEEP_FORMATTING: man normally strips bold/underline when stdout is
     # not a terminal. MANWIDTH: wrap to the help pane, not to our own tty.
