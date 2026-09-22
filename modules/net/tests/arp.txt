@@ -1,0 +1,4 @@
+router.lan (10.0.0.1) at 0:11:22:33:44:55 on en0 ifscope [ethernet]
+? (10.0.0.23) at aa:bb:cc:dd:ee:ff on en0 ifscope [ethernet]
+printer.lan (10.0.0.40) at 11:22:33:44:55:66 on en0 ifscope [ethernet]
+? (10.0.0.99) at (incomplete) on en0 ifscope [ethernet]
