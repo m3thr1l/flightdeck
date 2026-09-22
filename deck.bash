@@ -54,7 +54,7 @@ else
         _deck_stamped=
         printf '\033]2;stdin\007'
     }
-    trap _deck_debug DEBUG
     PROMPT_COMMAND="${PROMPT_COMMAND:+$PROMPT_COMMAND;}_deck_precmd"   # ours last: it must restore the fds
     printf '\033]2;man\007' >"$DECK_HELP_TTY"
+    trap _deck_debug DEBUG        # last: from here on every command is the user's
 fi
