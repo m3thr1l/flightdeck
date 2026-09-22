@@ -533,7 +533,7 @@ _deck_remote() {                              # deck ssh HOST [SSH-ARGS...]
     fi
 
     # Helpers, plus a ZDOTDIR that runs the user's own startup files and then attaches.
-    tar -C $dir -cf - deck.zsh deck.bash deck-man deck-src deck-step deck-tty | _deck_ssh $host "
+    tar -C $dir -cf - deck.zsh deck.bash deck-man deck-src deck-tty | _deck_ssh $host "
         d=$rdir; mkdir -p \$d/zdot && tar -xf - -C \$d && cd \$d/zdot &&
         printf '%s\n' \"ZDOTDIR=\\\$HOME; [[ -r \\\$HOME/.zshenv ]] && source \\\$HOME/.zshenv; ZDOTDIR=\$d/zdot\" >.zshenv &&
         printf '%s\n' \"ZDOTDIR=\\\$HOME; [[ -r \\\$HOME/.zprofile ]] && source \\\$HOME/.zprofile; ZDOTDIR=\$d/zdot\" >.zprofile &&
