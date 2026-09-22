@@ -334,8 +334,8 @@ _deck_mode_man_follow() {
 
     local key="$cmd $sub" page
     if (( ! ${+_deck_pages[$key]} )); then
-        if   [[ -n $sub && $sub =~ '^[A-Za-z0-9_.+-]+$' ]] && man -w -- $cmd-$sub &>/dev/null; then page=$cmd-$sub
-        elif man -w -- $cmd &>/dev/null; then page=$cmd
+        if   [[ -n $sub && $sub =~ '^[A-Za-z0-9_.+-]+$' ]] && _deck_man_has $cmd-$sub; then page=$cmd-$sub
+        elif _deck_man_has $cmd; then page=$cmd
         else page=''; fi
         _deck_pages[$key]=$page
     fi
@@ -363,6 +363,13 @@ _deck_mode_man_repaint() {
     [[ $_deck_last == F:* ]] && { _deck_mode_files_repaint; return }
     local -a f; f=( ${(s:|:)${_deck_last#M:}} )
     [[ -n $f[1] ]] && $DECK_MAN $DECK_HELP_TTY $f[1] $_deck_scroll ${=f[2]} 2>/dev/null
+}
+# Is there a real man page for NAME? `man -w` must name an existing file: on
+# hosts with the manual pages stripped (Ubuntu "minimized"), man is a stub
+# that prints a notice and exits 0, and the follower must not render that.
+_deck_man_has() {
+    local f; f=$(command man -w -- "$1" 2>/dev/null) || return 1
+    [[ -n $f && -f ${f%%$'\n'*} ]]
 }
 # Is the word under the cursor a path?  A word that is an argument (not the
 # command) and has a /, starts with ~ or HOST:, or is the start of a name in
@@ -437,7 +444,11 @@ _deck_mode_files_follow() {
     _deck_mode_files_repaint
 }
 _deck_mode_files_repaint() {
-    local f; f=$(_deck_files_list "$_deck_files_host" "$_deck_files_dir") || return 0
+    local f; f=$(_deck_files_list "$_deck_files_host" "$_deck_files_dir") || {
+        # A remote listing needs the shared connection: say so instead of showing nothing.
+        [[ -n $_deck_files_host ]] && printf '\e[?7l\e[H\e[2J\e[7m %s\e[0m\n\e[2mno shared connection to %s: run  ssh %s  once (it stays open 10 minutes), then keep typing.\e[0m' \
+            "$_deck_files_host:$_deck_files_dir" "$_deck_files_host" "$_deck_files_host" >$DECK_HELP_TTY
+        return 0 }
     local -i n=0 line=0
     if [[ -n $_deck_files_prefix ]]; then
         n=$(grep -c -- "^${_deck_files_prefix}" $f 2>/dev/null)
