@@ -17,9 +17,4 @@ wait_until 15 _hist_ready
 check "command recorded" "$(t_out "deck history MYSTORY-MARK-$$")" "MYSTORY-MARK-$$"
 check "output recorded" "$(t_out "deck history -o MYSTORY-MARK")" "MYSTORY-MARK-$$"
 harness_stop; rc=$?
-for s in tests/suites/*.sh; do
-    [ -e "$s" ] || continue
-    echo "--- suites/${s##*/}"
-    FLIGHTDECK=$FLIGHTDECK bash "$s" || rc=$(( rc + 1 ))
-done
-exit $rc
+harness_suites tests/suites; exit $(( rc + $? ))

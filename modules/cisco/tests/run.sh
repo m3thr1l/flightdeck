@@ -31,12 +31,5 @@ keys "enable" Enter; wait_last "$HARNESS_PROMPT" 'Switch#$'; keys "conf t" Enter
 check "config mode in title" "$(T list-panes -F '#{pane_title}' | head -1)" 'Switch \(config\)'
 keys -l "end"; keys Enter; wait_last "$HARNESS_PROMPT" 'Switch#$'; keys -l "exit"; keys Enter; wait_title '^stdin stdout'
 check "mode restored" "$(t_out "echo mode=\$DECK_MODE")" 'mode=man'
-_suite_fail=0
-for _s in "$PWD"/tests/suites/*.sh; do
-    [ -e "$_s" ] || continue
-    echo "--- suites/${_s##*/}"
-    FLIGHTDECK=$FLIGHTDECK bash "$_s" || _suite_fail=$((_suite_fail + 1))
-done
-harness_stop
-rc=$?
-exit $((rc + ${_suite_fail:-0}))
+harness_stop; rc=$?
+harness_suites tests/suites; exit $(( rc + $? ))

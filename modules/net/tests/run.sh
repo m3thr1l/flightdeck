@@ -32,9 +32,4 @@ keys "ping router.lan"; wait_for "$M" '^host  10\.0\.0\.1$' 6
 check "card by name" "$(T capture-pane -p -t "$M" | head -1)" 'host  10\.0\.0\.1$'
 keys C-u
 harness_stop; rc=$?
-for s in tests/suites/*.sh; do
-    [ -e "$s" ] || continue
-    echo "--- suites/${s##*/}"
-    FLIGHTDECK=$FLIGHTDECK bash "$s" || rc=$(( rc + 1 ))
-done
-exit $rc
+harness_suites tests/suites; exit $(( rc + $? ))

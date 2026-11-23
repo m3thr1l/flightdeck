@@ -31,12 +31,5 @@ check "Alt-x wraps the line in deck step" "$(T capture-pane -p -t "$(pane script
 keys q; wait_for "$ERR" 'exit 130' 6
 check "q aborts with 130" "$(t_out "echo rc=\$?")" 'rc=130'
 
-_suite_fail=0
-for _s in "$PWD"/tests/suites/*.sh; do
-    [ -e "$_s" ] || continue
-    echo "--- suites/${_s##*/}"
-    FLIGHTDECK=$FLIGHTDECK bash "$_s" || _suite_fail=$((_suite_fail + 1))
-done
-harness_stop
-rc=$?
-exit $((rc + ${_suite_fail:-0}))
+harness_stop; rc=$?
+harness_suites tests/suites; exit $(( rc + $? ))
