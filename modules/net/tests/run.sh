@@ -23,11 +23,13 @@ check "man page when the cursor is on an option" "$(T capture-pane -p -t "$M" | 
 keys " 10.0.0.0/24"; wait_for "$M" '^subnet  10\.0\.0\.0/24  \(3 hosts\)' 6
 check "subnet view" "$(T capture-pane -p -t "$M" | head -1)" 'subnet  10\.0\.0\.0/24  \(3 hosts\)'
 keys C-u
-t "nmap() { command cat tests/nmap.txt }"
-t "nmap -sV 10.0.0.1"
-_net_ingested() { ./deck-hosts show 10.0.0.1 | tr '\n' '|' | grep -qE 'Ubiquiti Networks.*80/tcp'; }
+out=$(./deck-hosts show 10.0.0.77 2>&1); rc=$?
+check "automatic ingest: the host is unknown before the tool runs" "$out rc=$rc" 'unknown host rc=1'
+t "nmap() { command cat tests/nmap2.txt }"
+t "nmap -sV 10.0.0.77"
+_net_ingested() { ./deck-hosts show 10.0.0.77 | tr '\n' '|' | grep -qE 'Acme Widgets.*8080/tcp'; }
 wait_until 10 _net_ingested
-check "automatic ingest of a tool run" "$(./deck-hosts show 10.0.0.1 | tr '\n' '|')" 'Ubiquiti Networks.*80/tcp'
+check "automatic ingest of a tool run" "$(./deck-hosts show 10.0.0.77 | tr '\n' '|')" 'Acme Widgets.*8080/tcp'
 keys "ping router.lan"; wait_for "$M" '^host  10\.0\.0\.1$' 6
 check "card by name" "$(T capture-pane -p -t "$M" | head -1)" 'host  10\.0\.0\.1$'
 keys C-u
