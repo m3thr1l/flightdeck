@@ -82,20 +82,20 @@ harness_start() {
     t "deck"
     wait_for "$(pane man)" '.' 2 >/dev/null 2>&1 || true
 }
-t() { _hs_type "$1" "$1" "${2:-${HARNESS_T_TIMEOUT:-20}}"; }
+t() { _hs_type "$1" "$1" "${2:-}"; }
 t_out() {
     local f rc
     f=$(mktemp "$_hs_root/out.XXXXXX") || return 1
-    _hs_type "$1" "{ $1; } >$(printf %q "$f") 2>&1" "${2:-${HARNESS_T_TIMEOUT:-20}}"
+    _hs_type "$1" "{ $1; } >$(printf %q "$f") 2>&1" "${2:-}"
     rc=$?
     cat "$f"; rm -f "$f"
     return $rc
 }
-# _hs_type LABEL LINE SECONDS: type LINE and wait for it, naming LABEL on failure.
+# _hs_type LABEL LINE [SECONDS]: type LINE and wait for it, naming LABEL on failure.
 # Each call waits on a channel of its own, so the signal of a line that
 # finished after its bound can never end a later call.
 _hs_type() {
-    local label=$1 secs=$3 ch n w
+    local label=$1 secs=${3:-${HARNESS_T_TIMEOUT:-20}} ch n w
     _hs_calls=$(( _hs_calls + 1 )); ch=ok.$_hs_calls
     T send-keys "$2; tmux -L $_hs_sock wait-for -S $ch" Enter 2>/dev/null || {
         _hs_t_fail "tmux server is gone: $label"; return 1; }
