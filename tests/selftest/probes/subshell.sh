@@ -13,7 +13,7 @@ t "DECK_FOLLOW=0"
 case $1 in
 count)
     out=$(t_out "echo [x]; echo MARK-X" 2)
-    echo "captured=[$out]"
+    echo "captured-fail-lines=$(printf '%s\n' "$out" | grep -c '^FAIL ') captured=[$out]"
     ;;
 check)
     check "H-27 probe: the capture names the command, which never ran" "$(t_out "echo [x]; echo MARK-X" 2)" 'MARK-X'

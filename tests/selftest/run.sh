@@ -430,7 +430,8 @@ await "$pid" 20
 check "H-27 a t_out that times out inside \$( ) is counted: the summary reads 0 passed, 1 failed and the suite exits 1" \
     "summary=$(grep -E '^[0-9]+ passed, [0-9]+ failed$' "$OUT") rc=$RC [$STATE]" '^summary=0 passed, 1 failed rc=1 '
 check "H-27 its FAIL t: line reaches the suite's output, not the captured text" \
-    "$(has_line "$OUT" 'FAIL t: no prompt within 2 s: echo [x]; echo MARK-X') $(line "$OUT" 'captured=')" '^present captured=\[\]$'
+    "$(has_line "$OUT" 'FAIL t: no prompt within 2 s: echo [x]; echo MARK-X') $(line "$OUT" 'captured-fail-lines=')" \
+    '^present captured-fail-lines=0 '
 reap "$pid"
 newdir; OUT=$P/out; launch "$OUT" -- "$PROBES/subshell.sh" check; pid=$!
 await "$pid" 20
