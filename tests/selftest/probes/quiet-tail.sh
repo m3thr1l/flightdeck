@@ -10,8 +10,10 @@ log=$HARNESS_ROOT/man.log
 mkdir "$HARNESS_ROOT/bin"
 printf '%s\n' '#!/bin/sh' "printf '%s\\n' \"\$*\" >>'$log'" "exec '$real' \"\$@\"" >"$HARNESS_ROOT/bin/man"
 chmod +x "$HARNESS_ROOT/bin/man"
+# Exported before the server starts, so the pane shell has it without a
+# typed path (typing a long path is work for the follower in its own right).
+export PATH="$HARNESS_ROOT/bin:$PATH"
 harness_start
-t "path=( $HARNESS_ROOT/bin \$path )"
 t "H26=0"
 : >"$log"
 t "H26=1"
