@@ -52,8 +52,13 @@ if [ "$(T show-options -pv -t "$OUT" allow-set-title 2>/dev/null)" = off ]; then
     check "output panes ignore title escapes" "$(T list-panes -F '#{pane_title}' | tr '\n' ' ')" 'stdout stderr'
 else echo "skip title protection ($(tmux -V) has no allow-set-title pane option)"; fi
 
-t "vim -c q 2>/dev/null || true"; check "deck-tty restores zoom" "$(T display-message -p '#{window_zoomed_flag}')" '^0$'
+t "path=($PWD/tests/bin \$path); deck off; deck"
+t "vim -c q"
+check "H-05 a DECK_TTY_CMDS program runs with the window zoomed" "$(cat "$HARNESS_ROOT/zoom" 2>/dev/null)" '^1$'
+check "deck-tty restores zoom" "$(T display-message -p '#{window_zoomed_flag}')" '^0$'
 
 t "deck off"; sleep 0.5
 check "deck off closes panes" "$(T list-panes -F '#{pane_title}' | wc -l | tr -d ' ')" '^1$'
+t "echo AFTER-OFF-\$((6*7))"
+check "H-06 after deck off the prompt pane prints the command's output" "$(cap "$HARNESS_PROMPT" 3)" '^AFTER-OFF-42$'
 harness_stop
