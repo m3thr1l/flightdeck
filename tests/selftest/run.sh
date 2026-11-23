@@ -486,5 +486,45 @@ await "$pid" 15
 check "H-30 a missing or empty suites directory returns 0" \
     "missing=$R1 empty=$RC lines=$(cat "$OUT" "$OUT2" | grep -c '^--- ')" '^missing=0 empty=0 lines=0$'
 
+# tests/all.sh run from a scratch tree: the real all.sh and harness.sh, stubs for
+# the steps it runs that are not under test, and unit suites that source the harness
+# through $FLIGHTDECK as all.sh must make possible.
+all_tree() {
+    local t=$1 m
+    mkdir -p "$t/tests/suites" "$t/modules/ok/tests" "$t/modules/mod/tests/suites"
+    cp "$FLIGHTDECK/tests/all.sh" "$FLIGHTDECK/tests/harness.sh" "$t/tests/"
+    for m in syntax.sh run.sh; do printf '%s\n' '#!/usr/bin/env bash' 'exit 0' >"$t/tests/$m"; done
+    mkdir "$t/tests/selftest"; printf '%s\n' '#!/usr/bin/env bash' 'exit 0' >"$t/tests/selftest/run.sh"
+    printf '%s\n' '#!/usr/bin/env bash' '. "$FLIGHTDECK/tests/harness.sh"' 'check "H-31 core suite passes" a "^a$"' 'harness_stop' >"$t/tests/suites/pass.sh"
+    printf '%s\n' '#!/usr/bin/env bash' 'set -u' '. "${FLIGHTDECK:-$(cd ../.. && pwd)}/tests/harness.sh"' 'check "H-31 module own check" a "^a$"' \
+        'harness_stop; rc=$?' 'harness_suites "$(dirname "$0")/suites"; exit $(( rc + $? ))' >"$t/modules/mod/tests/run.sh"
+    sed "s/module own check/other module own check/" "$t/modules/mod/tests/run.sh" >"$t/modules/ok/tests/run.sh"
+    printf '%s\n' '#!/usr/bin/env bash' '. "$FLIGHTDECK/tests/harness.sh"' 'check "H-31 module suite passes" a "^a$"' 'harness_stop' >"$t/modules/mod/tests/suites/x.sh"
+    chmod +x "$t"/tests/*.sh "$t"/tests/suites/*.sh "$t"/tests/selftest/run.sh "$t"/modules/*/tests/run.sh
+}
+newdir; all_tree "$P/tree"; OUT=$P/out
+launch "$OUT" -- "$P/tree/tests/all.sh"; pid=$!
+await "$pid" 60
+check "H-31 with every core suite, module and module suite passing, all.sh exits 0 and reports none failed" \
+    "rc=$RC $(line "$OUT" '=== 0 suite')" '^rc=0 === 0 suite\(s\) failed$'
+check "H-31 a module suite under tests/suites of a module is run, after the module's own check" \
+    "$(grep -n -E '^(ok   H-31 module own check|--- suites/x\.sh|ok   H-31 module suite passes)$' "$OUT" | cut -d: -f2- | tr '\n' '|')" \
+    '^ok   H-31 module own check\|--- suites/x\.sh\|ok   H-31 module suite passes\|$'
+newdir; all_tree "$P/tree"; OUT=$P/out
+printf '%s\n' '#!/usr/bin/env bash' '. "$FLIGHTDECK/tests/harness.sh"' 'check "H-31 core suite fails" a "^b$"' 'harness_stop' >"$P/tree/tests/suites/fail.sh"
+printf '%s\n' '#!/usr/bin/env bash' '. "$FLIGHTDECK/tests/harness.sh"' 'check "H-31 module suite fails" a "^b$"' 'harness_stop' >"$P/tree/modules/mod/tests/suites/x.sh"
+chmod +x "$P/tree/tests/suites/fail.sh" "$P/tree/modules/mod/tests/suites/x.sh"
+launch "$OUT" -- "$P/tree/tests/all.sh"; pid=$!
+await "$pid" 60
+check "H-31 a failing core suite and a module whose own check passes but whose suite fails: all.sh exits 2" \
+    "rc=$RC" '^rc=2$'
+check "H-31 the summary line counts the two failed suites" "$(tail -1 "$OUT")" '^=== 2 suite\(s\) failed$'
+check "H-31 the failing core suite prints its FAIL line under its own === heading" \
+    "$(awk '/^=== tests\/suites\/fail\.sh$/ { f = 1; next } /^=== / { f = 0 } f && /^FAIL / { print; exit }' "$OUT")" '^FAIL H-31 core suite fails$'
+check "H-31 the failing module suite prints its FAIL line under the module's === heading" \
+    "$(awk '/^=== modules\/mod$/ { f = 1; next } /^=== / { f = 0 } f && /^FAIL / { print; exit }' "$OUT")" '^FAIL H-31 module suite fails$'
+check "H-31 a module that passes, and a passing core suite, print no FAIL line" \
+    "$(awk '/^=== modules\/ok$/ { f = 1; next } /^=== / { f = 0 } f && /^FAIL / { print }' "$OUT")$(awk '/^=== tests\/suites\/pass\.sh$/ { f = 1; next } /^=== / { f = 0 } f && /^FAIL / { print }' "$OUT")|" '^\|$'
+
 echo "$pass passed, $fail failed"
 exit "$fail"
