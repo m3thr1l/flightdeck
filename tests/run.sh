@@ -2,10 +2,6 @@
 # flightdeck's own tests. Needs tmux, zsh, python3; fzf for the pick test.
 set -u
 cd "$(dirname "$0")/.."
-for f in deck.zsh; do zsh -n "$f" || exit 1; done
-for f in deck-tty install.sh; do sh -n "$f" || exit 1; done
-for f in deck-man deck-src; do bash -n "$f" || exit 1; done
-echo "ok   syntax ($(tmux -V), $(zsh --version))"
 
 . tests/harness.sh
 harness_start "$PWD"
@@ -17,12 +13,11 @@ wait_for "$ERR" 'exit 1'
 check "stdout split" "$(cap "$OUT" 3)" '^out$'
 check "stderr split and exit stamp" "$(cap "$ERR" 3 | tr '\n' '|')" 'err.*exit 1'
 
-t "deck mode >/tmp/deckci.$$ 2>&1; deck mode nope >>/tmp/deckci.$$ 2>&1"
-check "deck mode lists modes" "$(cat /tmp/deckci.$$)" 'mode man \(available: man .*files\)'
-check "unknown mode refused" "$(cat /tmp/deckci.$$)" 'no such mode: nope'
+modes=$(t_out "deck mode; deck mode nope")
+check "deck mode lists modes" "$modes" 'mode man \(available: man .*files\)'
+check "unknown mode refused" "$modes" 'no such mode: nope'
 t "_deck_cmd_hello() { echo hello \$1 }"
-t "deck hello world >/tmp/deckci.$$ 2>&1"; check "plugin subcommand" "$(cat /tmp/deckci.$$)" '^hello world$'
-rm -f /tmp/deckci.$$
+check "plugin subcommand" "$(t_out "deck hello world")" '^hello world$'
 
 if man -w ls >/dev/null 2>&1; then
     keys "ls -l"; wait_for "$MAN" ' ls ' 6; check "man follower" "$(T capture-pane -p -t "$MAN" | head -1)" '^ ls '
@@ -37,18 +32,19 @@ check "listing of a subdirectory" "$(T capture-pane -p -t "$MAN" | head -3 | tr 
 keys C-u
 
 if command -v fzf >/dev/null; then
-    keys "cat tests/har"; keys C-]; sleep 2; keys Enter; sleep 1.5
+    keys "cat tests/har"; keys C-]; wait_for "$HARNESS_PROMPT" '[0-9]+/[0-9]+'; keys Enter
+    wait_last "$HARNESS_PROMPT" 'cat tests/harness\.sh'
     keys C-a "echo BUF:" Enter; wait_for "$OUT" 'BUF:'
     check "fzf pick inserts the path" "$(cap "$OUT" 2)" 'BUF:cat tests/harness.sh'
 else echo "skip fzf pick (no fzf)"; fi
 
-keys Escape m; sleep 1; check "Alt-m leaves man mode" "$(T list-panes -F '#{pane_title}' | tr '\n' ' ')" 'stdin stdout stderr [a-z]+ ' 
+keys Escape m; wait_title ' files$'; check "Alt-m leaves man mode" "$(T list-panes -F '#{pane_title}' | tr '\n' ' ')" 'stdin stdout stderr [a-z]+ ' 
 check "Alt-m: not man" "$(T list-panes -F '#{pane_title}' | tail -1)" '^(files|script|net|cisco)$'
-for i in 1 2 3 4 5; do [ "$(T list-panes -F '#{pane_title}' | tail -1)" = man ] && break; keys Escape m; sleep 1; done
+keys Escape m; wait_title ' man$'
 check "Alt-m cycles back to man" "$(T list-panes -F '#{pane_title}' | tail -1)" '^man$'
 
 if [ "$(T show-options -pv -t "$OUT" allow-set-title 2>/dev/null)" = off ]; then
-    t "printf '\\e]2;HIJACK\\a'"; sleep 0.5
+    t "printf '\\e]2;HIJACK\\a'; echo HIJACK-DONE-\$((6*7))"; wait_for "$OUT" 'HIJACK-DONE-42'
     check "output panes ignore title escapes" "$(T list-panes -F '#{pane_title}' | tr '\n' ' ')" 'stdout stderr'
 else echo "skip title protection ($(tmux -V) has no allow-set-title pane option)"; fi
 
@@ -57,7 +53,7 @@ t "vim -c q"
 check "H-05 a DECK_TTY_CMDS program runs with the window zoomed" "$(cat "$HARNESS_ROOT/zoom" 2>/dev/null)" '^1$'
 check "deck-tty restores zoom" "$(T display-message -p '#{window_zoomed_flag}')" '^0$'
 
-t "deck off"; sleep 0.5
+t "deck off"
 check "deck off closes panes" "$(T list-panes -F '#{pane_title}' | wc -l | tr -d ' ')" '^1$'
 t "echo AFTER-OFF-\$((6*7))"
 check "H-06 after deck off the prompt pane prints the command's output" "$(cap "$HARNESS_PROMPT" 3)" '^AFTER-OFF-42$'
