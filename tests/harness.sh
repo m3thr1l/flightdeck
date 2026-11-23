@@ -3,7 +3,9 @@
 #
 #   FLIGHTDECK=/path/to/flightdeck   (default: the directory above this file)
 #   . "$FLIGHTDECK/tests/harness.sh"
-#   harness_start [DIR] [FILE...]    start zsh in DIR, source deck.zsh then FILEs, run `deck`
+#   harness_start [DIR] [FILE...]    start zsh in DIR, source deck.zsh then FILEs, run `deck`;
+#                                    defines _hs_ok in that shell, which t needs (a shell started
+#                                    inside it does not have it, so t cannot be used there)
 #   t CMD [SECONDS]                  type CMD at the prompt and wait at most SECONDS
 #                                    (default $HARNESS_T_TIMEOUT, 20) for it to finish;
 #                                    past the bound: print FAIL, count it, send Ctrl-C, return 1
@@ -69,7 +71,9 @@ trap _hs_on_exit EXIT
 T() { tmux -L "$_hs_sock" "$@"; }
 harness_start() {
     local dir=${1:-$PWD}; shift 2>/dev/null
-    local src="source $FLIGHTDECK/deck.zsh"
+    # The first line defines _hs_ok, which every line t types ends with (see
+    # _hs_type). It is typed before deck.zsh is sourced, so no follower runs yet.
+    local src="_hs_ok() { tmux -L $_hs_sock wait-for -S ok.\${1#-} }; source $FLIGHTDECK/deck.zsh"
     local f; for f in "$@"; do src="$src; source $f"; done
     local made
     T kill-server 2>/dev/null
@@ -94,10 +98,16 @@ t_out() {
 # _hs_type LABEL LINE [SECONDS]: type LINE and wait for it, naming LABEL on failure.
 # Each call waits on a channel of its own, so the signal of a line that
 # finished after its bound can never end a later call.
+# The tail typed after LINE is "; _hs_ok -N", not the tmux command itself:
+# the man follower reacts to every keystroke, and a typed "tmux ... -S ok.N"
+# made it repaint the tmux manual several times per line (1.3-1.5 s of every
+# t under load). _hs_ok has no manual page, and the leading dash keeps N from
+# being read as a subcommand, so after the first line the follower's lookups
+# for the tail are all cached and it forks nothing.
 _hs_type() {
     local label=$1 secs=${3:-${HARNESS_T_TIMEOUT:-20}} ch n w
     _hs_calls=$(( _hs_calls + 1 )); ch=ok.$_hs_calls
-    T send-keys "$2; tmux -L $_hs_sock wait-for -S $ch" Enter 2>/dev/null || {
+    T send-keys "$2; _hs_ok -$_hs_calls" Enter 2>/dev/null || {
         _hs_t_fail "tmux server is gone: $label"; return 1; }
     tmux -L "$_hs_sock" wait-for "$ch" 2>/dev/null &
     w=$! n=$(( secs * 4 ))
