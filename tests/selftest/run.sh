@@ -223,17 +223,51 @@ await "$pid" 30
 check "H-09 without dash the step prints skip dash (not installed) and the clean tree passes" \
     "rc=$RC $(has_line "$OUT" 'skip dash (not installed)') $(line "$OUT" 'ok   syntax')" '^rc=0 present ok   syntax \(.*dash: skipped\)$'
 
-if [ "$(/bin/bash -c 'echo "${BASH_VERSINFO[0]}"' 2>/dev/null)" = 3 ]; then
-    newdir; tree_clean "$P/tree"; OUT=$P/out
+# The bash that syntax.sh finds first on PATH decides which checker rejects a
+# bash-4 file first: a bash 4+ passes it and only /bin/bash 3.x (labelled
+# bash-3.2) rejects it; a bash 3.x first on PATH (the macOS CI runner) rejects
+# it as plain bash and the file is not checked twice. The two cases below fix
+# the PATH so each holds on every machine.
+bash3=0
+[ "$(/bin/bash -c 'echo "${BASH_VERSINFO[0]}"' 2>/dev/null)" = 3 ] && bash3=1
+if [ "$bash3" = 1 ]; then
+    newdir; tree_clean "$P/tree"; OUT=$P/out; mkdir "$P/bin"
+    # A bash 4+ first on PATH, when this machine has one; otherwise skip.
+    pathbash4=""
+    oldifs=$IFS; IFS=:
+    for d in $PATH; do
+        if [ -x "$d/bash" ] && [ "$("$d/bash" -c 'echo "${BASH_VERSINFO[0]}"' 2>/dev/null)" -ge 4 ] 2>/dev/null; then pathbash4=$d/bash; break; fi
+    done
+    IFS=$oldifs
+    if [ -n "$pathbash4" ]; then
+        ln -s "$pathbash4" "$P/bin/bash"
+        oldifs=$IFS; IFS=:
+        for d in $PATH; do [ -d "$d" ] && ln -s "$d"/* "$P/bin/" 2>/dev/null; done
+        IFS=$oldifs
+        printf '%s\n' 'echo x |& cat' >"$P/tree/deck.bash"
+        printf '%s\n' '#!/usr/bin/env bash' 'echo x |& cat' >"$P/tree/deck-man"
+        launch "$OUT" PATH="$P/bin" -- "$SYNTAX" "$P/tree"; pid=$!
+        await "$pid" 30
+        check "H-09 with a bash 4+ first on PATH, a bash-4 construct (|&) in deck.bash fails once, from the /bin/bash 3.2 checker" \
+            "count=$(fails_for "$OUT" deck.bash | wc -l | tr -d ' ') $(fails_for "$OUT" deck.bash)" '^count=1 FAIL syntax bash-3\.2 deck\.bash: '
+        check "H-09 with a bash 4+ first on PATH, a bash-4 construct (|&) in deck-man fails once, from the /bin/bash 3.2 checker" \
+            "count=$(fails_for "$OUT" deck-man | wc -l | tr -d ' ') $(fails_for "$OUT" deck-man)" '^count=1 FAIL syntax bash-3\.2 deck-man: '
+    else echo "skip H-09 bash 4+ first on PATH case (no bash 4+ on PATH)"; fi
+
+    newdir; tree_clean "$P/tree"; OUT=$P/out; mkdir "$P/bin"
+    ln -s /bin/bash "$P/bin/bash"
+    oldifs=$IFS; IFS=:
+    for d in $PATH; do [ -d "$d" ] && ln -s "$d"/* "$P/bin/" 2>/dev/null; done
+    IFS=$oldifs
     printf '%s\n' 'echo x |& cat' >"$P/tree/deck.bash"
     printf '%s\n' '#!/usr/bin/env bash' 'echo x |& cat' >"$P/tree/deck-man"
-    launch "$OUT" -- "$SYNTAX" "$P/tree"; pid=$!
+    launch "$OUT" PATH="$P/bin" -- "$SYNTAX" "$P/tree"; pid=$!
     await "$pid" 30
-    check "H-09 a bash-4 construct (|&) in deck.bash fails when /bin/bash is 3.2" \
-        "count=$(fails_for "$OUT" deck.bash | wc -l | tr -d ' ') $(fails_for "$OUT" deck.bash)" '^count=1 FAIL syntax bash-3\.2 deck\.bash: '
-    check "H-09 a bash-4 construct (|&) in deck-man fails when /bin/bash is 3.2" \
-        "count=$(fails_for "$OUT" deck-man | wc -l | tr -d ' ') $(fails_for "$OUT" deck-man)" '^count=1 FAIL syntax bash-3\.2 deck-man: '
-else echo "skip H-09 bash 3.2 case (/bin/bash is not bash 3)"; fi
+    check "H-09 with /bin/bash 3.2 first on PATH, a bash-4 construct (|&) in deck.bash fails once, from the plain bash checker" \
+        "count=$(fails_for "$OUT" deck.bash | wc -l | tr -d ' ') $(fails_for "$OUT" deck.bash)" '^count=1 FAIL syntax bash deck\.bash: '
+    check "H-09 with /bin/bash 3.2 first on PATH, a bash-4 construct (|&) in deck-man fails once, from the plain bash checker" \
+        "count=$(fails_for "$OUT" deck-man | wc -l | tr -d ' ') $(fails_for "$OUT" deck-man)" '^count=1 FAIL syntax bash deck-man: '
+else echo "skip H-09 bash 3.2 cases (/bin/bash is not bash 3)"; fi
 
 newdir; tree_clean "$P/tree"; OUT=$P/out
 printf '%s\n' '#!/usr/bin/env bash' 'echo suite' 'cat /tmp/deckci.$$' 'sleep 1' 'sleep 1   # sleep: a reason' >"$P/tree/tests/run.sh"
