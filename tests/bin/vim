@@ -1,0 +1,4 @@
+#!/bin/sh
+# Stands in for vim in the core suite: records whether the window is zoomed
+# while the program runs, then exits at once.
+tmux display-message -p -t "$TMUX_PANE" '#{window_zoomed_flag}' >"$HARNESS_ROOT/zoom"
