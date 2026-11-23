@@ -8,7 +8,6 @@ FLIGHTDECK=${FLIGHTDECK:-$(cd ../.. && pwd)}
 . "$FLIGHTDECK/tests/harness.sh"
 harness_start "$PWD" "$PWD/step.zsh"
 OUT=$(pane stdout); ERR=$(pane stderr)
-t "DECK_FOLLOW=0"
 
 check "script mode registered" "$(t_out "deck mode")" 'script'
 keys "deck step tests/t.sh" Enter; wait_for "$(pane script)" 't\.sh:2' 6

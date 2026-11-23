@@ -8,7 +8,7 @@ export MYSTORY_DIR=$(mktemp -d); trap 'rm -rf "$MYSTORY_DIR"' EXIT
 . "${FLIGHTDECK:-$(cd ../.. && pwd)}/tests/harness.sh"
 harness_start "$PWD" "$PWD/history.zsh"
 OUT=$(pane stdout)
-t "echo MYSTORY-MARK-$$; echo to-stderr >&2" 60
+t "echo MYSTORY-MARK-$$; echo to-stderr >&2"
 _hist_ready() {
     ./deck-history "MYSTORY-MARK-$$" | grep -q "MYSTORY-MARK-$$" &&
         ./deck-history -o MYSTORY-MARK | grep -q "MYSTORY-MARK-$$"
