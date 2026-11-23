@@ -415,5 +415,15 @@ check "H-22 the command's output is discarded" \
     "$(line "$OUT" 'quiet ')" '^quiet rc=0 out=$'
 reap "$pid"
 
+if man -w ls >/dev/null 2>&1; then
+    newdir; OUT=$P/out; launch "$OUT" -- "$PROBES/quiet-tail.sh"; pid=$!
+    await "$pid" 40
+    check "H-26 control: with the follower on, a t line whose command has a manual page is looked up" \
+        "$(line "$OUT" 'control>>') [$STATE]" '^control>> rc=0 log=.*(^|[| ])ls\|'
+    check "H-26 the text t adds to a line makes the follower look nothing up: a warm t of an assignment causes no man call" \
+        "$(line "$OUT" 'quiet>>') [$STATE]" '^quiet>> rc=0 lookups=0 log= '
+    reap "$pid"
+else echo "skip H-26 (no man page for ls, so the follower looks nothing up)"; fi
+
 echo "$pass passed, $fail failed"
 exit "$fail"
