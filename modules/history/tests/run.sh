@@ -9,10 +9,12 @@ export MYSTORY_DIR=$(mktemp -d); trap 'rm -rf "$MYSTORY_DIR"' EXIT
 harness_start "$PWD" "$PWD/history.zsh"
 OUT=$(pane stdout)
 t "echo MYSTORY-MARK-$$; echo to-stderr >&2"
-sleep 3
-t "deck history MYSTORY-MARK-$$ >/tmp/deckci.$$ 2>&1"
-check "command recorded" "$(cat /tmp/deckci.$$)" "MYSTORY-MARK-$$"
-t "deck history -o MYSTORY-MARK >/tmp/deckci.$$ 2>&1"
-check "output recorded" "$(cat /tmp/deckci.$$)" "MYSTORY-MARK-$$"
-rm -f /tmp/deckci.$$
-harness_stop
+_hist_ready() {
+    ./deck-history "MYSTORY-MARK-$$" | grep -q "MYSTORY-MARK-$$" &&
+        ./deck-history -o MYSTORY-MARK | grep -q "MYSTORY-MARK-$$"
+}
+wait_until 15 _hist_ready
+check "command recorded" "$(t_out "deck history MYSTORY-MARK-$$")" "MYSTORY-MARK-$$"
+check "output recorded" "$(t_out "deck history -o MYSTORY-MARK")" "MYSTORY-MARK-$$"
+harness_stop; rc=$?
+harness_suites tests/suites; exit $(( rc + $? ))

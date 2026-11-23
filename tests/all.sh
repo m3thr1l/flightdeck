@@ -1,11 +1,26 @@
 #!/usr/bin/env bash
-# Run the core tests and then every module's, as CI does.
+# Run every suite, as CI does: the syntax step, the harness self-test, the
+# core tests, the suites in tests/suites, then each module's. The exit status
+# is the number of suites that failed.
 cd "$(dirname "$0")/.." || exit 1
+# Unit suites source "$FLIGHTDECK/tests/harness.sh"; the root is what they need.
+FLIGHTDECK=$PWD
+export FLIGHTDECK
 fail=0
-tests/run.sh || fail=$(( fail + 1 ))
+run() {
+    echo "=== $1"
+    shift
+    "$@" || fail=$(( fail + 1 ))
+}
+run tests/syntax.sh tests/syntax.sh
+run tests/selftest tests/selftest/run.sh
+run tests/run.sh tests/run.sh
+for s in tests/suites/*.sh; do
+    [ -f "$s" ] || continue
+    run "$s" "$s"
+done
 for m in modules/*/; do
-    echo "=== ${m%/}"
-    FLIGHTDECK=$PWD "$m/tests/run.sh" || fail=$(( fail + 1 ))
+    run "${m%/}" "$m/tests/run.sh"
 done
 echo "=== $fail suite(s) failed"
 exit $fail

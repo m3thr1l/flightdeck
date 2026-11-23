@@ -9,7 +9,7 @@ FLIGHTDECK=${FLIGHTDECK:-$(cd ../.. && pwd)}
 harness_start "$PWD" "$PWD/cisco.zsh"
 OUT=$(pane stdout); ERR=$(pane stderr)
 
-keys "deck net --exec tests/fake-ios" Enter; wait_for %0 'Switch>' 6; sleep 1.5   # deck's delayed title-setter, then deck-net's reassert
+keys "deck net --exec tests/fake-ios" Enter; wait_for %0 'Switch>' 6; sleep 1.5   # sleep: two title writers (deck's delayed setter, then deck-net's reassert) with no observable end
 check "title follows the device mode" "$(T list-panes -F '#{pane_title}' | tr '\n' ' ')" 'stdin ▸ Switch exec.* cisco'
 keys "show version" Enter; wait_for "$OUT" 'uptime' 6
 check "output to stdout pane, stamped" "$(cap "$OUT" 3 | tr '\n' '|')" '❯ show version\|Cisco IOS.*\|uptime'
@@ -27,9 +27,9 @@ keys "yes" Enter; wait_for "$OUT" '\[OK\]' 6
 check "answer and reply in stdout" "$(cap "$OUT" 3 | tr '\n' '|')" 'yes/no\]: yes\|Building.*\|\[OK\]'
 keys "reload" Enter; wait_for %0 'confirm' 6; keys n; wait_for "$OUT" 'cancelled' 6
 check "one-key answer" "$(cap "$OUT" 1)" 'Reload cancelled'
-keys "enable" Enter; sleep 0.5; keys "conf t" Enter; sleep 1
+keys "enable" Enter; wait_last "$HARNESS_PROMPT" 'Switch#$'; keys "conf t" Enter; wait_title 'Switch \(config\)'
 check "config mode in title" "$(T list-panes -F '#{pane_title}' | head -1)" 'Switch \(config\)'
-keys -l "end"; keys Enter; sleep 0.5; keys -l "exit"; keys Enter; sleep 1.5
-t "echo mode=\$DECK_MODE >/tmp/deckci.$$"; check "mode restored" "$(cat /tmp/deckci.$$)" 'mode=man'
-rm -f /tmp/deckci.$$
-harness_stop
+keys -l "end"; keys Enter; wait_last "$HARNESS_PROMPT" 'Switch#$'; keys -l "exit"; keys Enter; wait_title '^stdin stdout'
+check "mode restored" "$(t_out "echo mode=\$DECK_MODE")" 'mode=man'
+harness_stop; rc=$?
+harness_suites tests/suites; exit $(( rc + $? ))
