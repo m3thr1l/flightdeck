@@ -53,3 +53,10 @@ harness_stop() {
     echo "$_hs_pass passed, $_hs_fail failed"
     return $_hs_fail
 }
+HARNESS_ROOT=
+HARNESS_PROMPT=
+t_out() { return 1; }
+titles() { return 1; }
+wait_title() { return 1; }
+wait_last() { return 1; }
+wait_until() { return 1; }
