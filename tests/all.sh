@@ -3,6 +3,9 @@
 # core tests, the suites in tests/suites, then each module's. The exit status
 # is the number of suites that failed.
 cd "$(dirname "$0")/.." || exit 1
+# Unit suites source "$FLIGHTDECK/tests/harness.sh"; the root is what they need.
+FLIGHTDECK=$PWD
+export FLIGHTDECK
 fail=0
 run() {
     echo "=== $1"
@@ -17,7 +20,7 @@ for s in tests/suites/*.sh; do
     run "$s" "$s"
 done
 for m in modules/*/; do
-    run "${m%/}" env FLIGHTDECK="$PWD" "$m/tests/run.sh"
+    run "${m%/}" "$m/tests/run.sh"
 done
 echo "=== $fail suite(s) failed"
 exit $fail
