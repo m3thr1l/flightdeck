@@ -425,5 +425,65 @@ if man -w ls >/dev/null 2>&1; then
     reap "$pid"
 else echo "skip H-26 (no man page for ls, so the follower looks nothing up)"; fi
 
+newdir; OUT=$P/out; launch "$OUT" -- "$PROBES/subshell.sh" count; pid=$!
+await "$pid" 20
+check "H-27 a t_out that times out inside \$( ) is counted: the summary reads 0 passed, 1 failed and the suite exits 1" \
+    "summary=$(grep -E '^[0-9]+ passed, [0-9]+ failed$' "$OUT") rc=$RC [$STATE]" '^summary=0 passed, 1 failed rc=1 '
+check "H-27 its FAIL t: line reaches the suite's output, not the captured text" \
+    "$(has_line "$OUT" 'FAIL t: no prompt within 2 s: echo [x]; echo MARK-X') $(line "$OUT" 'captured=')" '^present captured=\[\]$'
+reap "$pid"
+newdir; OUT=$P/out; launch "$OUT" -- "$PROBES/subshell.sh" check; pid=$!
+await "$pid" 20
+check "H-27 check \"…\" \"\$(t_out LINE)\" PATTERN with a line that never runs fails the suite, though PATTERN names the line" \
+    "rc=$RC fail-t=$(grep -c '^FAIL t: ' "$OUT") summary=$(grep -E '^[0-9]+ passed, [0-9]+ failed$' "$OUT") [$STATE]" \
+    '^rc=[1-9][0-9]* fail-t=1 summary=0 passed, [1-9][0-9]* failed '
+reap "$pid"
+newdir; OUT=$P/out; launch "$OUT" -- "$PROBES/subshell.sh" channels; pid=$!
+await "$pid" 30
+check "H-28 after a timed-out \$(t_out …) whose line signals late, the next \$(t_out \"sleep 4…\" 10) waits for its own line" \
+    "$(line "$OUT" 'second ') [$STATE]" '^second rc=0 elapsed=([4-9]|1[0-2]) captured=\[TWO-42\] '
+check "H-28 and the one after it waits for its own line too" \
+    "$(line "$OUT" 'third ') [$STATE]" '^third rc=0 captured=\[THREE-42\] '
+reap "$pid"
+
+newdir; OUT=$P/out
+launch "$OUT" XDG_CONFIG_HOME="$P/xdg/config" -- "$PROBES/restore.sh"; pid=$!
+await "$pid" 10
+before=$(line "$OUT" 'before '); after=$(line "$OUT" 'after ')
+check "H-29 after harness_stop HOME, XDG_* and TMPDIR are what they were before sourcing, unset ones unset" \
+    "$(same "${before#before }" "${after#after }") changed-while-running=$(line "$OUT" 'during ' | grep -c "$P/tmp/deckci\.")" \
+    '^same changed-while-running=1$'
+
+suite_tree() {
+    mkdir -p "$1/suites"
+    printf '%s\n' '#!/usr/bin/env bash' 'set -u' '. "$FLIGHTDECK/tests/harness.sh"' 'check "runner own check" a "^a$"' \
+        'if [ "$1" = after ]; then harness_stop; rc=$?; harness_suites "$(dirname "$0")/suites"; exit $(( rc + $? )); fi' \
+        'harness_suites "$(dirname "$0")/suites"; s=$?; harness_stop; exit $(( $? + s ))' >"$1/runner.sh"
+    printf '%s\n' '#!/usr/bin/env bash' 'set -u' 'echo "child TMPDIR=${TMPDIR-<unset>} HOME=${HOME-<unset>}"' \
+        '. "$FLIGHTDECK/tests/harness.sh"' 'check "H-30 child passes" a "^a$"' 'harness_stop' >"$1/suites/pass.sh"
+}
+newdir; suite_tree "$P/tree"; OUT=$P/out
+launch "$OUT" -- "$P/tree/runner.sh" after; pid=$!
+await "$pid" 15
+check "H-30 a runner that calls harness_stop then harness_suites, with one passing suite, exits 0 and shows the suite's ok line" \
+    "rc=$RC $(line "$OUT" '--- suites/') $(line "$OUT" 'ok   H-30 child')" '^rc=0 --- suites/pass\.sh ok   H-30 child passes$'
+check "H-30 the suite runs with the caller's original TMPDIR and HOME" \
+    "$(line "$OUT" 'child ')" "^child TMPDIR=$P/tmp HOME=$P/home\$"
+newdir; suite_tree "$P/tree"; OUT=$P/out
+printf '%s\n' '#!/usr/bin/env bash' '. "$FLIGHTDECK/tests/harness.sh"' 'check "H-30 child fails" a "^b$"' 'harness_stop' >"$P/tree/suites/fail.sh"
+launch "$OUT" -- "$P/tree/runner.sh" before; pid=$!
+await "$pid" 15
+check "H-30 called before harness_stop, with a failing suite: exits non-zero, and the FAIL line follows its --- suites/ line" \
+    "rc=$RC $(awk '/^--- suites\/fail\.sh$/ { f = 1; next } /^--- / { f = 0 } f && /^FAIL / { print; exit }' "$OUT") $(line "$OUT" 'child ')" \
+    "^rc=1 FAIL H-30 child fails child TMPDIR=$P/tmp HOME=$P/home\$"
+newdir; suite_tree "$P/tree"; rm -r "$P/tree/suites"; OUT=$P/out
+launch "$OUT" -- "$P/tree/runner.sh" after; pid=$!
+await "$pid" 15; R1=$RC
+newdir; suite_tree "$P/tree"; rm "$P/tree/suites/pass.sh"; OUT2=$P/out
+launch "$OUT2" -- "$P/tree/runner.sh" after; pid=$!
+await "$pid" 15
+check "H-30 a missing or empty suites directory returns 0" \
+    "missing=$R1 empty=$RC lines=$(cat "$OUT" "$OUT2" | grep -c '^--- ')" '^missing=0 empty=0 lines=0$'
+
 echo "$pass passed, $fail failed"
 exit "$fail"
