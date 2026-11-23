@@ -16,17 +16,25 @@ check "unknown host" "$out rc=$rc" 'unknown host rc=1'
 
 harness_start "$PWD" "$PWD/net.zsh"
 t "deck mode net"; M=$(pane net)
-keys "ssh 10.0.0.40"; wait_for "$M" 'printer' 6
+keys "ssh 10.0.0.40"; wait_for "$M" '^host  10\.0\.0\.40$' 6
 check "card for the address under the cursor" "$(T capture-pane -p -t "$M" | head -3 | tr '\n' '|')" 'host  10\.0\.0\.40\|10\.0\.0\.40  printer\.lan\|.*mac'
 keys " -p"; wait_for "$M" '^ ssh  -p' 6
 check "man page when the cursor is on an option" "$(T capture-pane -p -t "$M" | head -1)" '^ ssh  -p'
-keys " 10.0.0.0/24"; wait_for "$M" 'subnet' 6
+keys " 10.0.0.0/24"; wait_for "$M" '^subnet  10\.0\.0\.0/24  \(3 hosts\)' 6
 check "subnet view" "$(T capture-pane -p -t "$M" | head -1)" 'subnet  10\.0\.0\.0/24  \(3 hosts\)'
 keys C-u
 t "nmap() { command cat tests/nmap.txt }"
-t "nmap -sV 10.0.0.1"; sleep 1.5
+t "nmap -sV 10.0.0.1"
+_net_ingested() { ./deck-hosts show 10.0.0.1 | tr '\n' '|' | grep -qE 'Ubiquiti Networks.*80/tcp'; }
+wait_until 10 _net_ingested
 check "automatic ingest of a tool run" "$(./deck-hosts show 10.0.0.1 | tr '\n' '|')" 'Ubiquiti Networks.*80/tcp'
-keys "ping router.lan"; wait_for "$M" 'host  10\.0\.0\.1' 6
+keys "ping router.lan"; wait_for "$M" '^host  10\.0\.0\.1$' 6
 check "card by name" "$(T capture-pane -p -t "$M" | head -1)" 'host  10\.0\.0\.1$'
 keys C-u
-harness_stop
+harness_stop; rc=$?
+for s in tests/suites/*.sh; do
+    [ -e "$s" ] || continue
+    echo "--- suites/${s##*/}"
+    FLIGHTDECK=$FLIGHTDECK bash "$s" || rc=$(( rc + 1 ))
+done
+exit $rc
