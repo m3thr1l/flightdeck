@@ -132,6 +132,8 @@ newdir; OUT=$P/out; launch "$OUT" -- "$PROBES/dead-server.sh"; pid=$!
 await "$pid" 10
 check "H-17 with the server gone, t returns 1 within 2 s and prints FAIL t: tmux server is gone: echo x" \
     "$(line "$OUT" 't>>') $(has_line "$OUT" 'FAIL t: tmux server is gone: echo x') [$STATE]" '^t>> rc=1 elapsed=[0-2] present '
+check "H-17 the dead-server failure counts in the summary and the exit status" \
+    "summary=$(grep -E '^[0-9]+ passed, [0-9]+ failed$' "$OUT") rc=$RC" '^summary=0 passed, 1 failed rc=1$'
 reap "$pid"
 
 tree_clean() {
@@ -166,17 +168,17 @@ printf '%s\n' '#!/usr/bin/env python3' 'def f(:' >"$P/tree/tool-py"
 launch "$OUT" -- "$SYNTAX" "$P/tree"; pid=$!
 await "$pid" 30
 check "H-07 a syntax error in a .zsh file fails as zsh, naming the file" \
-    "count=$(fails_for "$OUT" x.zsh | wc -l | tr -d ' ') $(fails_for "$OUT" x.zsh)" '^count=1 FAIL syntax zsh [^ ]*x\.zsh: '
+    "count=$(fails_for "$OUT" x.zsh | wc -l | tr -d ' ') $(fails_for "$OUT" x.zsh)" '^count=1 FAIL syntax zsh x\.zsh: '
 check "H-07 a syntax error in deck.bash fails as bash, naming the file" \
-    "count=$(fails_for "$OUT" deck.bash | wc -l | tr -d ' ') $(fails_for "$OUT" deck.bash)" '^count=1 FAIL syntax bash[^ ]* [^ ]*deck\.bash: '
+    "count=$(fails_for "$OUT" deck.bash | wc -l | tr -d ' ') $(fails_for "$OUT" deck.bash)" '^count=1 FAIL syntax bash deck\.bash: '
 check "H-07 a syntax error in a #!...bash file fails as bash, naming the file" \
-    "count=$(fails_for "$OUT" tool-bash | wc -l | tr -d ' ') $(fails_for "$OUT" tool-bash)" '^count=1 FAIL syntax bash[^ ]* [^ ]*tool-bash: '
+    "count=$(fails_for "$OUT" tool-bash | wc -l | tr -d ' ') $(fails_for "$OUT" tool-bash)" '^count=1 FAIL syntax bash tool-bash: '
 check "H-07 a syntax error in a tests/**/*.sh file with no #! line fails as bash, naming the file" \
-    "count=$(fails_for "$OUT" helper.sh | wc -l | tr -d ' ') $(fails_for "$OUT" helper.sh)" '^count=1 FAIL syntax bash[^ ]* [^ ]*tests/sub/helper\.sh: '
+    "count=$(fails_for "$OUT" helper.sh | wc -l | tr -d ' ') $(fails_for "$OUT" helper.sh)" '^count=1 FAIL syntax bash tests/sub/helper\.sh: '
 check "H-07 a syntax error in a #!/bin/sh file fails as sh, naming the file" \
-    "count=$(fails_for "$OUT" tool-sh | wc -l | tr -d ' ') $(fails_for "$OUT" tool-sh)" '^count=1 FAIL syntax (sh|dash) [^ ]*tool-sh: '
+    "count=$(fails_for "$OUT" tool-sh | wc -l | tr -d ' ') $(fails_for "$OUT" tool-sh)" '^count=1 FAIL syntax sh tool-sh: '
 check "H-07 a syntax error in a #!...python3 file fails as python, naming the file" \
-    "count=$(fails_for "$OUT" tool-py | wc -l | tr -d ' ') $(fails_for "$OUT" tool-py)" '^count=1 FAIL syntax python3? [^ ]*tool-py: '
+    "count=$(fails_for "$OUT" tool-py | wc -l | tr -d ' ') $(fails_for "$OUT" tool-py)" '^count=1 FAIL syntax python3 tool-py: '
 check "H-07 the step's exit status is the number of failing files" \
     "rc=$RC fails=$(grep -c '^FAIL' "$OUT")" '^rc=6 fails=6$'
 
@@ -185,7 +187,7 @@ printf '%s\n' '#!/usr/bin/env python3' 'match x:' '    case 1:' '        pass' >
 launch "$OUT" -- "$SYNTAX" "$P/tree"; pid=$!
 await "$pid" 30
 check "H-07 a #!...python3 file is parsed at the 3.8 grammar (match fails)" \
-    "rc=$RC $(fails_for "$OUT" tool-py)" '^rc=1 FAIL syntax python3? [^ ]*tool-py: '
+    "rc=$RC $(fails_for "$OUT" tool-py)" '^rc=1 FAIL syntax python3 tool-py: '
 
 newdir; tree_clean "$P/tree"; OUT=$P/out
 printf '%s\n' 'hello' >"$P/tree/mystery"
@@ -194,9 +196,9 @@ chmod +x "$P/tree/mystery" "$P/tree/runner"
 launch "$OUT" -- "$SYNTAX" "$P/tree"; pid=$!
 await "$pid" 30
 check "H-08 an executable file with no known extension or #! line fails as unclassified" \
-    "$(fails_for "$OUT" mystery)" '^FAIL .*unclassified'
+    "$(fails_for "$OUT" mystery)" '^FAIL syntax unclassified mystery: no known extension or #! line$'
 check "H-08 an executable file with an unknown #! line fails as unclassified" \
-    "$(fails_for "$OUT" runner)" '^FAIL .*unclassified'
+    "$(fails_for "$OUT" runner)" '^FAIL syntax unclassified runner: no known extension or #! line$'
 check "H-08 only the two unclassified executables fail (README.md and data.txt are not executable)" \
     "rc=$RC fails=$(grep -c '^FAIL' "$OUT")" '^rc=2 fails=2$'
 
@@ -208,7 +210,7 @@ if command -v dash >/dev/null 2>&1; then
     launch "$OUT" -- "$SYNTAX" "$P/tree"; pid=$!
     await "$pid" 30
     check "H-09 a bashism (cat <<< x) in a #!/bin/sh file fails when dash is installed" \
-        "rc=$RC $(fails_for "$OUT" tool-sh)" '^rc=1 FAIL syntax (sh|dash) [^ ]*tool-sh: '
+        "rc=$RC $(fails_for "$OUT" tool-sh)" '^rc=1 FAIL syntax (sh|dash) tool-sh: '
 else echo "skip H-09 bashism case (dash not installed)"; fi
 
 newdir; tree_clean "$P/tree"; OUT=$P/out; mkdir "$P/bin"
@@ -228,9 +230,9 @@ if [ "$(/bin/bash -c 'echo "${BASH_VERSINFO[0]}"' 2>/dev/null)" = 3 ]; then
     launch "$OUT" -- "$SYNTAX" "$P/tree"; pid=$!
     await "$pid" 30
     check "H-09 a bash-4 construct (|&) in deck.bash fails when /bin/bash is 3.2" \
-        "count=$(fails_for "$OUT" deck.bash | wc -l | tr -d ' ') $(fails_for "$OUT" deck.bash)" '^count=1 FAIL syntax [^ ]+ [^ ]*deck\.bash: '
+        "count=$(fails_for "$OUT" deck.bash | wc -l | tr -d ' ') $(fails_for "$OUT" deck.bash)" '^count=1 FAIL syntax bash-3\.2 deck\.bash: '
     check "H-09 a bash-4 construct (|&) in deck-man fails when /bin/bash is 3.2" \
-        "count=$(fails_for "$OUT" deck-man | wc -l | tr -d ' ') $(fails_for "$OUT" deck-man)" '^count=1 FAIL syntax [^ ]+ [^ ]*deck-man: '
+        "count=$(fails_for "$OUT" deck-man | wc -l | tr -d ' ') $(fails_for "$OUT" deck-man)" '^count=1 FAIL syntax bash-3\.2 deck-man: '
 else echo "skip H-09 bash 3.2 case (/bin/bash is not bash 3)"; fi
 
 newdir; tree_clean "$P/tree"; OUT=$P/out
@@ -240,13 +242,47 @@ launch "$OUT" -- "$SYNTAX" "$P/tree"; pid=$!
 await "$pid" 30
 core_hyg=$(grep '^FAIL hygiene ' "$OUT" | grep -v 'modules/')
 check "H-10 a suite line that names /tmp/ fails hygiene at its line" \
-    "count=$(printf '%s\n' "$core_hyg" | grep -c 'tests/run\.sh:3: ')" '^count=1$'
+    "$(has_line "$OUT" 'FAIL hygiene tests/run.sh:3: names /tmp/')" '^present$'
 check "H-10 a suite line with a bare sleep fails hygiene at its line" \
-    "count=$(printf '%s\n' "$core_hyg" | grep -c 'tests/run\.sh:4: ')" '^count=1$'
+    "$(has_line "$OUT" 'FAIL hygiene tests/run.sh:4: sleep without # sleep: REASON')" '^present$'
 check "H-10 a module suite's bare sleep fails hygiene at its line" \
-    "count=$(grep '^FAIL hygiene ' "$OUT" | grep -c 'modules/m/tests/run\.sh:2: ')" '^count=1$'
-check "H-10 a sleep with # sleep: REASON, and /tmp/ or sleep outside the suites, pass" \
-    "rc=$RC fails=$(grep -c '^FAIL' "$OUT") line5=$(printf '%s\n' "$core_hyg" | grep -c 'tests/run\.sh:5: ')" '^rc=[1-9][0-9]* fails=3 line5=0$'
+    "$(has_line "$OUT" 'FAIL hygiene modules/m/tests/run.sh:2: sleep without # sleep: REASON')" '^present$'
+check "H-10 a sleep with # sleep: REASON, and /tmp/ or sleep outside the suites, pass; the exit status is the number of FAIL lines" \
+    "rc=$RC fails=$(grep -c '^FAIL' "$OUT") line5=$(printf '%s\n' "$core_hyg" | grep -c 'tests/run\.sh:5: ')" '^rc=3 fails=3 line5=0$'
+
+newdir; tree_clean "$P/tree"; OUT=$P/out
+printf '%s\n' 'if [[ -n x ]]; then' >"$P/tree/top.zsh"
+mkdir -p "$P/tree/nested/.git"
+printf '%s\n' 'if [[ -n x ]]; then' >"$P/tree/nested/inner.zsh"
+launch "$OUT" -- "$SYNTAX" "$P/tree"; pid=$!
+await "$pid" 30
+check "H-25 outside git the walk skips a directory holding its own .git, where the same file at the top is reported" \
+    "nested=$(fails_for "$OUT" inner.zsh | wc -l | tr -d ' ') top=$(fails_for "$OUT" top.zsh) rc=$RC" \
+    '^nested=0 top=FAIL syntax zsh top\.zsh: .* rc=1$'
+
+if command -v git >/dev/null 2>&1; then
+    newdir; tree_clean "$P/tree"; OUT=$P/out
+    git init -q "$P/tree"
+    printf '%s\n' 'if [[ -n x ]]; then' >"$P/tree/untracked.zsh"
+    printf '%s\n' 'if [[ -n x ]]; then' >"$P/tree/tracked.zsh"
+    git -C "$P/tree" add tracked.zsh
+    printf '%s\n' 'if [[ -n x ]]; then' >"$P/tree/ignored.zsh"
+    printf '%s\n' 'ignored.zsh' >"$P/tree/.gitignore"
+    git init -q "$P/tree/nested"
+    printf '%s\n' 'if [[ -n x ]]; then' >"$P/tree/nested/inner.zsh"
+    launch "$OUT" -- "$SYNTAX" "$P/tree"; pid=$!
+    await "$pid" 30
+    check "H-25 in a git tree a broken untracked file is reported" \
+        "$(fails_for "$OUT" untracked.zsh)" '^FAIL syntax zsh untracked\.zsh: '
+    check "H-25 in a git tree a broken file in the index is reported" \
+        "$(fails_for "$OUT" tracked.zsh)" '^FAIL syntax zsh tracked\.zsh: '
+    check "H-25 in a git tree a broken file that .gitignore names is not reported, where the same file untracked is" \
+        "ignored=$(fails_for "$OUT" ignored.zsh | wc -l | tr -d ' ') untracked=$(fails_for "$OUT" untracked.zsh | wc -l | tr -d ' ')" \
+        '^ignored=0 untracked=1$'
+    check "H-25 in a git tree a broken file in a nested repository is not reported, where the same file at the top is" \
+        "nested=$(fails_for "$OUT" inner.zsh | wc -l | tr -d ' ') untracked=$(fails_for "$OUT" untracked.zsh | wc -l | tr -d ' ') rc=$RC" \
+        '^nested=0 untracked=1 rc=2$'
+else echo "skip H-25 git tree (git not installed)"; fi
 
 newdir; PI=$P; ISO=$P/out
 launch "$ISO" XDG_CONFIG_HOME="$P/xdg/config" XDG_CACHE_HOME="$P/xdg/cache" XDG_DATA_HOME="$P/xdg/data" XDG_STATE_HOME="$P/xdg/state" \
@@ -302,9 +338,9 @@ await "$pid" 15
 check "H-13 harness_stop kills the server and removes its socket file and the root" \
     "$(line "$OUT" root-before) $(line "$OUT" server-after) $(sock_state "$(val "$OUT" sock)") $(root_state "$(val "$OUT" root)")" \
     '^root-before=dir server-after=gone socket=gone root=gone$'
-check "H-13 harness_stop prints the summary and returns the failure count; a second call prints nothing" \
-    "first:'$(between "$OUT" stop1)' $(line "$OUT" 'stop1>>') second:'$(between "$OUT" stop2)'" \
-    "^first:'1 passed, 1 failed' stop1>> rc=1 second:''$"
+check "H-13 harness_stop prints the summary and returns the failure count; a second call prints nothing and returns the same count" \
+    "first:'$(between "$OUT" stop1)' $(line "$OUT" 'stop1>>') second:'$(between "$OUT" stop2)' $(line "$OUT" 'stop2>>')" \
+    "^first:'1 passed, 1 failed' stop1>> rc=1 second:'' stop2>> rc=1$"
 reap "$pid"
 
 newdir; OUT=$P/out; launch "$OUT" HARNESS_KEEP=1 -- "$PROBES/stop.sh"; pid=$!
